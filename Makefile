@@ -1,6 +1,6 @@
 obj-m		+= clearram.o
 ccflags-y	+= -std=gnu99 -Wall
-KSRC		:= $(HOME)/.local/src/linux-source-4.7
+KSRC		:= /lib/modules/$(shell uname -r)/build
 clearram.ko:	clearram.c
 		make -C $(KSRC) M=$(PWD) modules
 clean::
