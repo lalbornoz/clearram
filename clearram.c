@@ -17,9 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
-#ifndef __linux__
-#error Only Linux is supported at present.
-#else
+#if defined(__linux__)
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
@@ -32,10 +30,23 @@
 #ifndef CONFIG_X86_64
 #error Only x86_64 is supported at present.
 #endif /* !CONFIG_X86_64 */
+#elif defined(__FreeBSD__)
+#include <sys/types.h>
+#include <sys/module.h>
+#include <sys/systm.h>
+#include <sys/param.h>
+#include <sys/kernel.h>
+#include <sys/conf.h>
+#include <sys/uio.h>
+#include <sys/malloc.h>
+#include <vm/vm.h>
+#include <vm/pmap.h>
+#else
+#error Only Linux and FreeBSD are supported at present.
+#endif /* defined(__linux__) || defined(__FreBSD__) */
 #if PAGE_SIZE != 0x1000
 #error Only 4 KB pages are supported at present.
 #endif /* PAGE_SIZE != 0x1000 */
-#endif /* __linux__ */
 
 /*
  * Control Register 3 (CR3) in Long Mode, as per:
@@ -51,7 +62,7 @@ struct cr3 {
 	unsigned		ign1:7;
 	uintptr_t		pml4_pfn_base:40;
 	unsigned		ign2:12;
-} __packed;
+} __attribute__((packed));
 #define CR_INIT_CR3(cr3, new_pml4_pfn_base)				\
 	do {								\
 		(cr3)->bits = CR3_BIT_WRITE_THROUGH;			\
@@ -77,26 +88,26 @@ enum pe_bits {
 	PE_BIT_PAGE_SIZE	= 0x080,
 	PE_BIT_GLOBAL		= 0x100,
 };
-struct __packed page_ent {
+struct page_ent {
 	enum pe_bits		bits:9;
 	unsigned		avl0_2:3;
 	uintptr_t		pfn_base:40;
 	unsigned		avl3_12:11, nx:1;
-};
-struct __packed page_ent_1G {
+} __attribute__((packed));
+struct page_ent_1G {
 	enum pe_bits		bits:9;
 	unsigned		avl0_2:3;
 	unsigned		pat:1, mbz:18;
 	uintptr_t		pfn_base:21;
 	unsigned		avl3_12:11, nx:1;
-};
-struct __packed page_ent_2M {
+} __attribute__((packed));
+struct page_ent_2M {
 	enum pe_bits		bits:9;
 	unsigned		avl0_2:3;
 	unsigned		pat:1, mbz:8;
 	uintptr_t		pfn_base:31;
 	unsigned		avl3_12:11, nx:1;
-};
+} __attribute__((packed));
 
 #define CR_INIT_PAGE_ENT(pe, bits_extra)				\
 	do {								\
@@ -123,6 +134,16 @@ struct __packed page_ent_2M {
  * Static subroutine prototypes
  */
 
+#define cr_do_div(n,base) ({					\
+	uint32_t __base = (base);				\
+	uint32_t __rem;						\
+	__rem = ((uint64_t)(n)) % __base;			\
+	(n) = ((uint64_t)(n)) / __base;				\
+	__rem;							\
+ })
+#define CR_DIV_ROUND_UP_ULL(ll,d) \
+	({ unsigned long long _tmp = (ll)+(d)-1; cr_do_div(_tmp, d); _tmp; })
+
 /* Page mapping logic and helper subroutines */
 static uintptr_t cr_virt_to_phys(uintptr_t va);
 static void cr_map_set_pfn_base( struct page_ent *pe, int level, uintptr_t pfn_base);
@@ -132,18 +153,28 @@ static int cr_map_page(struct page_ent *pt_cur, uintptr_t *va, uintptr_t pfn, si
 static int cr_map_pages(struct page_ent *pml4, uintptr_t *va_base, uintptr_t pfn_base, uintptr_t pfn_limit, uintptr_t *map_base, uintptr_t map_limit);
 
 /* Kernel module {exit,entry} point and helper subroutines */
-void clearram_exit(void);
+#if defined(__linux__)
 static ssize_t __attribute__((noreturn)) cr_cdev_write(struct file *file, const char __user *buf, size_t len, loff_t *ppos);
+#elif defined(__FreeBSD__)
+static d_write_t __attribute__((noreturn)) cr_cdev_write;
+#endif /* defined(__linux__) || defined(__FreBSD__) */
 static int cr_map_pfns_compare(const void *lhs, const void *rhs);
 static void *cr_maps_alloc(unsigned long size, void (**map_free)(const void *));
 static int cr_node_iterate(size_t nid, uintptr_t *ppfn_base, uintptr_t *ppfn_limit);
+void clearram_exit(void);
 int clearram_init(void);
+#ifdef __FreeBSD__
+static int clearram_evhand(struct module *m, int what, void *arg);
+#endif /* __FreeBSD__ */
 
 /* Zero-fill RAM code and helper subroutines */
+#if defined(__linux__)
 #ifdef CONFIG_SMP
 static void cr_stop_cpu(void *info);
 static void cr_stop_cpus(void);
 #endif /* CONFIG_SMP */
+#elif defined(__FreeBSD__)
+#endif /* defined(__linux__) || defined(__FreBSD__) */
 static void __attribute__((aligned(PAGE_SIZE))) cr_clear(void);
 
 /*
@@ -160,16 +191,19 @@ void *			cr_map = NULL;
 static
 uintptr_t *		cr_map_pfns = NULL;
 
+#ifdef __linux__
 /* Function pointer to either of {vfree,kfree}(), releasing cr_map{,_pfns}. */
 static
 void			(*cr_map_free)(const void *) = NULL;
 static
 void			(*cr_map_pfns_free)(const void *);
+#endif /* __linux__ */
 
 /* Page Map Level 4 */
 static
 struct page_ent *	cr_pml4 = NULL;
 
+#if defined(__linux__)
 /* Character device node file operations */
 static
 struct file_operations	cr_cdev_fops = {
@@ -183,6 +217,19 @@ static
 struct class *		cr_cdev_class = NULL;
 static
 struct device *		cr_cdev_device = NULL;
+#elif defined(__FreeBSD__)
+/* Character device node file operations */
+static
+struct cdevsw		cr_cdev_fops = {
+	.d_version	= D_VERSION,
+	.d_write	= cr_cdev_write,
+	.d_name		= "clearram",
+};
+
+/* Character device pointer. */
+static
+struct cdev *		cr_cdev_device = NULL;
+#endif /* defined(__linux__) || defined(__FreBSD__) */
 
 /*
  * Page mapping logic and helper subroutines
@@ -194,6 +241,7 @@ cr_virt_to_phys(
 	uintptr_t	va
 )
 {
+#if defined(__linux__)
 	pgd_t *		pgd;
 	pud_t *		pud;
 	pmd_t *		pmd;
@@ -207,6 +255,9 @@ cr_virt_to_phys(
 	} else {
 		return ((*(unsigned long *)pte) >> 12) & 0xffffffffff;
 	};
+#elif defined(__FreeBSD__)
+	return vtophys(va);
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 }
 
 static
@@ -253,7 +304,7 @@ cr_map_translate_pfn_base(
 
 	switch (level) {
 	case 4:
-		pfn_base =pe->pfn_base; break;
+		pfn_base = pe->pfn_base; break;
 	case 3:
 		if ((pe->bits & PE_BIT_PAGE_SIZE)) {
 			pe_1G = (struct page_ent_1G *)pe;
@@ -401,43 +452,44 @@ cr_map_pages(
  * Kernel module {exit,entry} point and helper subroutines
  */
 
+#if defined(__linux__)
 module_exit(clearram_exit);
 module_init(clearram_init);
 MODULE_AUTHOR("Lucía Andrea Illanes Albornoz <lucia@luciaillanes.de>");
 MODULE_DESCRIPTION("clearram");
 MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE("clearram");
+#elif defined(__FreeBSD__)
+static
+moduledata_t clearram_mod = {
+	"clearram", clearram_evhand, NULL,
+};
 
-void
-clearram_exit(
-	void
-)
-{
-	if (cr_cdev_device) {
-		device_destroy(cr_cdev_class, MKDEV(cr_cdev_major, 0));
-	};
-	if (cr_cdev_class) {
-		class_destroy(cr_cdev_class);
-	};
-	if (cr_cdev_major) {
-		unregister_chrdev(cr_cdev_major, "clearram");
-	};
-	if (cr_map_pfns) {
-		cr_map_pfns_free(cr_map_pfns);
-	};
-	if (cr_map) {
-		cr_map_free(cr_map);
-	};
-}
+MALLOC_DECLARE(M_CLEARRAM);
+MALLOC_DEFINE(M_CLEARRAM, "clearram", "buffer for clearram module");
+DECLARE_MODULE(clearram, clearram_mod, SI_SUB_KLD, SI_ORDER_ANY);
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 
+#if defined(__linux__)
 static
 ssize_t
 __attribute__((noreturn))
-cr_cdev_write(struct file *file,
+cr_cdev_write(
+	struct file *		file,
 	const char __user *	buf,
 	size_t			len,
 	loff_t *		ppos
 )
+#elif defined(__FreeBSD__)
+static
+int
+__attribute__((noreturn))
+cr_cdev_write(
+	struct cdev *	dev,
+	struct uio *	uio,
+	int		ioflag
+)
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 {
 	cr_clear();
 	__builtin_unreachable();
@@ -452,8 +504,8 @@ cr_map_pfns_compare(
 {
 	uintptr_t	lhs_pfn, rhs_pfn;
 
-	lhs_pfn = *(uintptr_t *)lhs;
-	rhs_pfn = *(uintptr_t *)rhs;
+	lhs_pfn = *(const uintptr_t *)lhs;
+	rhs_pfn = *(const uintptr_t *)rhs;
 	if (lhs_pfn < rhs_pfn) {
 		return -1;
 	} else
@@ -471,6 +523,7 @@ cr_maps_alloc(
 	void		(**map_free)(const void *)
 )
 {
+#if defined(__linux__)
 	void *	map;
 
 	map = vmalloc(size);
@@ -485,6 +538,9 @@ cr_maps_alloc(
 		*map_free = &vfree;
 	};
 	return memset(map, 0, size), map;
+#elif defined(__FreeBSD__)
+	return malloc(size, M_CLEARRAM, M_WAITOK | M_ZERO);
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 }
 
 static
@@ -499,6 +555,7 @@ cr_node_iterate(
 				pfn_node_limit = 0,
 				pfn = 0;
 
+#if defined(__linux__)
 	if (nid >= MAX_NUMNODES) {
 		return -ENOENT;
 	} else
@@ -524,9 +581,45 @@ cr_node_iterate(
 			continue;
 		};
 	};
+#elif defined(__FreeBSD__)
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 	pfn_node_start = pfn_node_limit = pfn = 0;
 	*ppfn_base = *ppfn_limit = 0;
 	return 0;
+}
+
+void
+clearram_exit(
+	void
+)
+{
+#if defined(__linux__)
+	if (cr_cdev_device) {
+		device_destroy(cr_cdev_class, MKDEV(cr_cdev_major, 0));
+	};
+	if (cr_cdev_class) {
+		class_destroy(cr_cdev_class);
+	};
+	if (cr_cdev_major) {
+		unregister_chrdev(cr_cdev_major, "clearram");
+	};
+	if (cr_map_pfns) {
+		cr_map_pfns_free(cr_map_pfns);
+	};
+	if (cr_map) {
+		cr_map_free(cr_map);
+	};
+#elif defined(__FreeBSD__)
+	if (cr_cdev_device) {
+		destroy_dev(cr_cdev_device);
+	};
+	if (cr_map_pfns) {
+		free(cr_map_pfns, M_CLEARRAM);
+	};
+	if (cr_map) {
+		free(cr_map, M_CLEARRAM);
+	};
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 }
 
 int
@@ -552,7 +645,11 @@ clearram_init(
 	||  ((cr_clear_limit - cr_clear_base) > PAGE_SIZE)) {
 		return -EINVAL;
 	};
+#if defined(__linux__)
 	for (nid = 0, cr_map_npages = 0; nid < MAX_NUMNODES; nid++) {
+#elif defined(__FreeBSD__)
+	for (nid = 0, cr_map_npages = 0; nid < 1; nid++) {
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 		while ((err = cr_node_iterate(nid, &pfn_block_base,
 				&pfn_block_limit)) == 1) {
 			cr_map_npages += (pfn_block_limit - pfn_block_base);
@@ -562,9 +659,9 @@ clearram_init(
 		};
 	};
 	cr_map_npages =
-		      (DIV_ROUND_UP_ULL(cr_map_npages, (512)))			/* Page Tables */
-		    + (DIV_ROUND_UP_ULL(cr_map_npages, (512 * 512)))		/* Page Directories */
-		    + (DIV_ROUND_UP_ULL(cr_map_npages, (512 * 512 * 512)))	/* Page Directory Pointer pages */
+		      (CR_DIV_ROUND_UP_ULL(cr_map_npages, (512)))		/* Page Tables */
+		    + (CR_DIV_ROUND_UP_ULL(cr_map_npages, (512 * 512)))		/* Page Directories */
+		    + (CR_DIV_ROUND_UP_ULL(cr_map_npages, (512 * 512 * 512)))	/* Page Directory Pointer pages */
 		    + (1);							/* Page Map Level 4 */
 	cr_map_npages += (1 + 1 + 1);						/* {PDP,PD,PT} to map code at top of VA */
 	cr_map_npages += (1 + 1 + 1);						/* {PDP,PD,PT} to map code at original VA */
@@ -574,7 +671,11 @@ clearram_init(
 	 * Initialise map
 	 * Create & sort PFN list
 	 */
+#if defined(__linux__)
 	cr_map = cr_maps_alloc(cr_map_npages * PAGE_SIZE, &cr_map_free);
+#elif defined(__FreeBSD__)
+	cr_map = cr_maps_alloc(cr_map_npages * PAGE_SIZE, NULL);
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 	if (!cr_map) {
 		return clearram_exit(), -ENOMEM;
 	} else {
@@ -582,7 +683,11 @@ clearram_init(
 		map_cur = (uintptr_t)cr_map + PAGE_SIZE;
 		cr_pml4 = cr_map;
 	};
+#if defined(__linux__)
 	cr_map_pfns = cr_maps_alloc((cr_map_npages + 1) * sizeof(uintptr_t), &cr_map_pfns_free);
+#elif defined(__FreeBSD__)
+	cr_map_pfns = cr_maps_alloc((cr_map_npages + 1) * sizeof(uintptr_t), NULL);
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 	if (!cr_map_pfns) {
 		return clearram_exit(), -ENOMEM;
 	} else
@@ -590,14 +695,23 @@ clearram_init(
 		cr_map_pfns[npfn] = cr_virt_to_phys((uintptr_t)cr_map + (npfn * PAGE_SIZE));
 	};
 	cr_map_pfns[npfn] = cr_virt_to_phys(cr_clear_base);
+#if defined(__linux__)
 	sort(cr_map_pfns, cr_map_npages + 1, sizeof(uintptr_t),
 		&cr_map_pfns_compare, NULL);
+#elif defined(__FreeBSD__)
+	qsort(cr_map_pfns, cr_map_npages + 1, sizeof(uintptr_t),
+		&cr_map_pfns_compare);
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 
 	/*
 	 * Iterate over consecutive page frame nodes
 	 * Given PFN list match, map prefix, otherwise, map everything
 	 */
+#if defined(__linux__)
 	for (nid = 0, va = 0x0LL; nid < MAX_NUMNODES; nid++) {
+#elif defined(__FreeBSD__)
+	for (nid = 0, va = 0x0LL; nid < 1; nid++) {
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 		while ((err = cr_node_iterate(nid, &pfn_block_base,
 				&pfn_block_limit)) == 1) {
 			for (npfn = 0; npfn < (cr_map_npages + 1); npfn++) {
@@ -656,6 +770,7 @@ clearram_init(
 	/*
 	 * Create cdev
 	 */
+#if defined(__linux__)
 	cr_cdev_major = register_chrdev(0, "clearram", &cr_cdev_fops);
 	if (cr_cdev_major < 0) {
 		return clearram_exit(), cr_cdev_major;
@@ -668,14 +783,43 @@ clearram_init(
 	if (IS_ERR(cr_cdev_device)) {
 		return clearram_exit(), PTR_ERR(cr_cdev_device);
 	};
+#elif defined(__FreeBSD__)
+	err = make_dev_p(MAKEDEV_CHECKNAME | MAKEDEV_WAITOK,
+		    &cr_cdev_device, &cr_cdev_fops, 0,
+		    UID_ROOT, GID_WHEEL, 0600, "clearram");
+	if (err != 0) {
+		return clearram_exit(), err;
+	};
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 
 	return 0;
 }
+
+#ifdef __FreeBSD__
+static
+int
+clearram_evhand(
+	struct module *	m,
+	int		what,
+	void *		arg
+)
+{
+	switch (what) {
+	case MOD_LOAD:
+		return clearram_init() * -1;
+	case MOD_UNLOAD:
+		return clearram_exit(), 0;
+	default:
+		return EOPNOTSUPP;
+	};
+}
+#endif /* __FreeBSD__ */
 
 /*
  * Zero-fill RAM code and helper subroutines
  */
 
+#if defined(__linux__)
 #ifdef CONFIG_SMP
 static
 void
@@ -713,6 +857,8 @@ cr_stop_cpus(
 	};
 }
 #endif /* CONFIG_SMP */
+#elif defined(__FreeBSD__)
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 
 static
 void
@@ -721,7 +867,10 @@ cr_clear(
 	void
 )
 {
+#if defined(__linux__)
 	int		this_cpu;
+#elif defined(__FreeBSD__)
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 	struct cr3	cr3;
 
 	/*
@@ -732,10 +881,13 @@ cr_clear(
 	 * Zero-fill from 0x0L onwards, eventually causing a triple fault and
 	 * thus, CPU reset.
 	 */
+#if defined(__linux__)
 	this_cpu = get_cpu();
 #ifdef CONFIG_SMP
 	cr_stop_cpus();
 #endif /* CONFIG_SMP */
+#elif defined(__FreeBSD__)
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 	CR_INIT_CR3(&cr3, cr_virt_to_phys((uintptr_t)cr_pml4));
 	__asm volatile(
 		"\tcli\n"
