@@ -554,12 +554,18 @@ cr_node_iterate(
 	static uintptr_t	pfn_node_start = 0,
 				pfn_node_limit = 0,
 				pfn = 0;
-
 #if defined(__linux__)
+	struct mem_section *	ms;
+
 	if (nid >= MAX_NUMNODES) {
 		return -ENOENT;
 	} else
 	if (!pfn) {
+#ifdef CONFIG_NUMA
+		if (!NODE_DATA(nid)) {
+			goto fini;
+		};
+#endif /* CONFIG_NUMA */
 		pfn_node_start = node_start_pfn(nid);
 		pfn_node_limit = pfn_node_start + node_spanned_pages(nid);
 		if (pfn_node_limit <= pfn_node_start) {
@@ -570,7 +576,9 @@ cr_node_iterate(
 		};
 	};
 	for (pfn = pfn; pfn < pfn_node_limit; pfn += PAGES_PER_SECTION) {
-		if (!page_is_ram(pfn)) {
+		ms = __pfn_to_section(pfn);
+		if (unlikely(!valid_section(ms))
+		||  unlikely(pfn_to_nid(pfn) != nid)) {
 			continue;
 		} else
 		if (!present_section_nr(pfn_to_section_nr(pfn))) {
@@ -584,6 +592,9 @@ cr_node_iterate(
 			continue;
 		};
 	};
+#ifdef CONFIG_NUMA
+fini:	
+#endif /* CONFIG_NUMA */
 #elif defined(__FreeBSD__)
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
 	pfn_node_start = pfn_node_limit = pfn = 0;
