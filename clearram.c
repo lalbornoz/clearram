@@ -570,6 +570,9 @@ cr_node_iterate(
 		};
 	};
 	for (pfn = pfn; pfn < pfn_node_limit; pfn += PAGES_PER_SECTION) {
+		if (!page_is_ram(pfn)) {
+			continue;
+		} else
 		if (!present_section_nr(pfn_to_section_nr(pfn))) {
 			*ppfn_limit = pfn;
 			return pfn = *ppfn_limit + 1, 1;
