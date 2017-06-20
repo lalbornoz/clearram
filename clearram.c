@@ -26,6 +26,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/sort.h>
+#include <linux/wait.h>
 #include <linux/vmalloc.h>
 
 #ifndef CONFIG_X86_64
@@ -682,12 +683,12 @@ cr_stop_cpu(
 	void *	info
 )
 {
-	struct semaphore *	stop_cpus_sem;
+	wait_queue_head_t	*stop_cpus_queue;
 
-	stop_cpus_sem = info;
+	stop_cpus_queue = info;
 	__asm volatile(
 		"\t	cli\n");
-	up(stop_cpus_sem);
+	wake_up(stop_cpus_queue);
 	__asm volatile(
 		"\t1:	hlt\n"
 		"\t	jmp 1b\n");
@@ -699,17 +700,17 @@ cr_stop_cpus(
 	void
 )
 {
-	struct semaphore	stop_cpus_sem;
+	wait_queue_head_t	stop_cpus_queue;
 	int			ncpu_cur, ncpus, ncpu;
 
-	sema_init(&stop_cpus_sem, num_online_cpus());
+	init_waitqueue_head(&stop_cpus_queue);
 	ncpu_cur = smp_processor_id();
 	for (ncpu = 0, ncpus = num_online_cpus(); ncpu < ncpus; ncpu++) {
 		if (ncpu != ncpu_cur) {
-			smp_call_function_single(ncpu, cr_stop_cpu, &stop_cpus_sem, 0);
+			smp_call_function_single(ncpu, cr_stop_cpu, &stop_cpus_queue, 0);
 		};
+		wait_event(stop_cpus_queue, 1);
 	};
-	down(&stop_cpus_sem);
 }
 #endif /* CONFIG_SMP */
 
