@@ -77,24 +77,24 @@ enum pe_bits {
 	PE_BIT_GLOBAL		= 0x100,
 };
 struct __packed page_ent {
-enum pe_bits			bits:9;
-unsigned			avl0_2:3;
-uintptr_t			pfn_base:40;
-unsigned			avl3_12:11, nx:1;
+	enum pe_bits		bits:9;
+	unsigned		avl0_2:3;
+	uintptr_t		pfn_base:40;
+	unsigned		avl3_12:11, nx:1;
 };
 struct __packed page_ent_1G {
-enum pe_bits			bits:9;
-unsigned			avl0_2:3;
-unsigned			pat:1, mbz:18;
-uintptr_t			pfn_base:21;
-unsigned			avl3_12:11, nx:1;
+	enum pe_bits		bits:9;
+	unsigned		avl0_2:3;
+	unsigned		pat:1, mbz:18;
+	uintptr_t		pfn_base:21;
+	unsigned		avl3_12:11, nx:1;
 };
 struct __packed page_ent_2M {
-enum pe_bits			bits:9;
-unsigned			avl0_2:3;
-unsigned			pat:1, mbz:8;
-uintptr_t			pfn_base:31;
-unsigned			avl3_12:11, nx:1;
+	enum pe_bits		bits:9;
+	unsigned		avl0_2:3;
+	unsigned		pat:1, mbz:8;
+	uintptr_t		pfn_base:31;
+	unsigned		avl3_12:11, nx:1;
 };
 
 #define CR_INIT_PAGE_ENT(pe, bits_extra)				\
