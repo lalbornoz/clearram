@@ -160,7 +160,7 @@ static d_write_t __attribute__((noreturn)) cr_cdev_write;
 #endif /* defined(__linux__) || defined(__FreBSD__) */
 static int cr_map_pfns_compare(const void *lhs, const void *rhs);
 static void *cr_maps_alloc(unsigned long size, void (**map_free)(const void *));
-static int cr_node_iterate(size_t nid, uintptr_t *ppfn_base, uintptr_t *ppfn_limit);
+static int cr_node_iterate(uintptr_t *ppfn_base, uintptr_t *ppfn_limit);
 void clearram_exit(void);
 int clearram_init(void);
 #ifdef __FreeBSD__
@@ -543,38 +543,39 @@ cr_maps_alloc(
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
 }
 
+#if defined(__linux__)
 static
 int
 cr_node_iterate(
-	size_t		nid,
 	uintptr_t *	ppfn_base,
 	uintptr_t *	ppfn_limit
 )
 {
+	static int		nid = 0;
 	static uintptr_t	pfn_node_start = 0,
 				pfn_node_limit = 0,
 				pfn = 0;
-#if defined(__linux__)
 	struct mem_section *	ms;
 
-	if (nid >= MAX_NUMNODES) {
-		return -ENOENT;
-	} else
-	if (!pfn) {
 #ifdef CONFIG_NUMA
-		if (!NODE_DATA(nid)) {
-			goto fini;
-		};
-#endif /* CONFIG_NUMA */
-		pfn_node_start = node_start_pfn(nid);
-		pfn_node_limit = pfn_node_start + node_spanned_pages(nid);
-		if (pfn_node_limit <= pfn_node_start) {
-			return -EINVAL;
-		} else {
-			pfn = pfn_node_start;
-			*ppfn_base = pfn_node_start; *ppfn_limit = 0;
+	for (nid = nid; nid < MAX_NUMNODES; nid++) {
+		if (NODE_DATA(nid)) {
+			break;
 		};
 	};
+#endif /* CONFIG_NUMA */
+	if ((nid >= MAX_NUMNODES)) {
+		pfn_node_start = pfn_node_limit = pfn = 0;
+		*ppfn_base = *ppfn_limit = 0; nid = 0;
+		return 0;
+	} else
+	if (!pfn) {
+		pfn_node_start = node_start_pfn(nid);
+		pfn_node_limit = pfn_node_start + node_spanned_pages(nid);
+		*ppfn_base = pfn = pfn_node_start;
+		*ppfn_limit = 0;
+	};
+
 	for (pfn = pfn; pfn < pfn_node_limit; pfn += PAGES_PER_SECTION) {
 		ms = __pfn_to_section(pfn);
 		if (unlikely(!valid_section(ms))
@@ -583,24 +584,40 @@ cr_node_iterate(
 		} else
 		if (!present_section_nr(pfn_to_section_nr(pfn))) {
 			*ppfn_limit = pfn;
-			return pfn = *ppfn_limit + 1, 1;
+			pfn = *ppfn_limit + 1;
+			return 1;
 		} else
 		if ((pfn + PAGES_PER_SECTION) >= pfn_node_limit) {
 			*ppfn_limit = pfn_node_limit;
-			return pfn = *ppfn_limit + 1, 1;
+			pfn = 0, nid++;
+			return 1;
 		} else {
 			continue;
 		};
 	};
-#ifdef CONFIG_NUMA
-fini:	
-#endif /* CONFIG_NUMA */
-#elif defined(__FreeBSD__)
-#endif /* defined(__linux__) || defined(__FreeBSD__) */
-	pfn_node_start = pfn_node_limit = pfn = 0;
-	*ppfn_base = *ppfn_limit = 0;
-	return 0;
+	return nid++, 1;
 }
+#elif defined(__FreeBSD__)
+static
+int
+cr_node_iterate(
+	uintptr_t *	ppfn_base,
+	uintptr_t *	ppfn_limit
+)
+{
+	static int	nid = 0;
+
+	if (!phys_avail[nid + 1]) {
+		*ppfn_base = *ppfn_limit = 0;
+		return 0;
+	} else {
+		*ppfn_base = phys_avail[nid];
+		*ppfn_limit = phys_avail[nid + 1];
+		nid += 2;
+		return 1;
+	};
+}
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 
 void
 clearram_exit(
@@ -644,7 +661,7 @@ clearram_init(
 	uintptr_t			cr_clear_base;
 	extern uintptr_t		cr_clear_limit;
 	uintptr_t			map_cur, map_limit;
-	size_t				npfn, nid;
+	size_t				npfn;
 	uintptr_t			va, pfn_block_base, pfn_block_limit;
 	int				err;
 
@@ -659,19 +676,16 @@ clearram_init(
 	||  ((cr_clear_limit - cr_clear_base) > PAGE_SIZE)) {
 		return -EINVAL;
 	};
-#if defined(__linux__)
-	for (nid = 0, cr_map_npages = 0; nid < MAX_NUMNODES; nid++) {
-#elif defined(__FreeBSD__)
-	for (nid = 0, cr_map_npages = 0; nid < 1; nid++) {
-#endif /* defined(__linux__) || defined(__FreeBSD__) */
-		while ((err = cr_node_iterate(nid, &pfn_block_base,
-				&pfn_block_limit)) == 1) {
-			cr_map_npages += (pfn_block_limit - pfn_block_base);
-		};
-		if (err < 0) {
-			return err;
-		};
+
+	cr_map_npages = 0;
+	while ((err = cr_node_iterate(&pfn_block_base,
+			&pfn_block_limit)) == 1) {
+		cr_map_npages += (pfn_block_limit - pfn_block_base);
 	};
+	if (err < 0) {
+		return err;
+	};
+
 	cr_map_npages =
 		      (CR_DIV_ROUND_UP_ULL(cr_map_npages, (512)))		/* Page Tables */
 		    + (CR_DIV_ROUND_UP_ULL(cr_map_npages, (512 * 512)))		/* Page Directories */
@@ -721,44 +735,39 @@ clearram_init(
 	 * Iterate over consecutive page frame nodes
 	 * Given PFN list match, map prefix, otherwise, map everything
 	 */
-#if defined(__linux__)
-	for (nid = 0, va = 0x0LL; nid < MAX_NUMNODES; nid++) {
-#elif defined(__FreeBSD__)
-	for (nid = 0, va = 0x0LL; nid < 1; nid++) {
-#endif /* defined(__linux__) || defined(__FreeBSD__) */
-		while ((err = cr_node_iterate(nid, &pfn_block_base,
-				&pfn_block_limit)) == 1) {
-			for (npfn = 0; npfn < (cr_map_npages + 1); npfn++) {
-				if ((cr_map_pfns[npfn] <  pfn_block_base)
-				||  (cr_map_pfns[npfn] >= pfn_block_limit)) {
-					continue;
-				} else
-				if (cr_map_pfns[npfn] == pfn_block_base) {
-					pfn_block_base = cr_map_pfns[npfn] + 1;
-					continue;
-				} else {
-					err = cr_map_pages(cr_pml4, &va, pfn_block_base,
-						cr_map_pfns[npfn], &map_cur, map_limit);
-					if (err != 0) {
-						return clearram_exit(), err;
-					};
-					pfn_block_base = cr_map_pfns[npfn] + 1;
-					if (pfn_block_base >= pfn_block_limit) {
-						break;
-					};
-				};
-			};
-			if (pfn_block_base < pfn_block_limit) {
-				err = cr_map_pages(cr_pml4, &va, pfn_block_base, pfn_block_limit,
-					&map_cur, map_limit);
+	va = 0x0LL;
+	while ((err = cr_node_iterate(&pfn_block_base,
+			&pfn_block_limit)) == 1) {
+		for (npfn = 0; npfn < (cr_map_npages + 1); npfn++) {
+			if ((cr_map_pfns[npfn] <  pfn_block_base)
+			||  (cr_map_pfns[npfn] >= pfn_block_limit)) {
+				continue;
+			} else
+			if (cr_map_pfns[npfn] == pfn_block_base) {
+				pfn_block_base = cr_map_pfns[npfn] + 1;
+				continue;
+			} else {
+				err = cr_map_pages(cr_pml4, &va, pfn_block_base,
+					cr_map_pfns[npfn], &map_cur, map_limit);
 				if (err != 0) {
 					return clearram_exit(), err;
 				};
+				pfn_block_base = cr_map_pfns[npfn] + 1;
+				if (pfn_block_base >= pfn_block_limit) {
+					break;
+				};
 			};
 		};
-		if (err < 0) {
-			return clearram_exit(), err;
+		if (pfn_block_base < pfn_block_limit) {
+			err = cr_map_pages(cr_pml4, &va, pfn_block_base, pfn_block_limit,
+				&map_cur, map_limit);
+			if (err != 0) {
+				return clearram_exit(), err;
+			};
 		};
+	};
+	if (err < 0) {
+		return clearram_exit(), err;
 	};
 
 	/*
