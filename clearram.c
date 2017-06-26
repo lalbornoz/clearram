@@ -110,10 +110,9 @@ struct page_ent_2M {
 } __attribute__((packed));
 
 #define CR_INIT_PAGE_ENT(pe, bits_extra, nx_) do {			\
+		*((unsigned long *)pe) = 0;				\
 		(pe)->bits = PE_BIT_PRESENT | PE_BIT_CACHE_DISABLE |	\
 			(bits_extra);					\
-		(pe)->avl0_2 = (pe)->avl3_12 = 0;			\
-		(pe)->pfn_base = 0;					\
 		(pe)->nx = (nx_);					\
 	} while (0)
 
@@ -287,7 +286,7 @@ static struct cdev *cr_cdev_device = NULL;
  */
 
 /**
- * cr_virt_to_phys() - translate virtual address to physical address (PFN)
+ * cr_virt_to_phys() - translate virtual address to physical address (PFN) using host page tables
  * @va:		Virtual address to translate
  *
  * Return: Physical address (PFN) mapped by virtual address
@@ -320,7 +319,7 @@ static uintptr_t cr_virt_to_phys(uintptr_t va)
 }
 
 /**
- * cr_map_set_pfn_base() - set {PML4,PDP,PD,PT} entry base address
+ * cr_map_set_pfn_base() - set {PML4,PDP,PD,PT} entry physical (PFN) base address
  * @pe:		pointer to {PML4,PDP,PD,PT} entry
  * @level:	4 if PML4, 3 if PDP, 2 if PD, 1 if PT
  * @pfn_base:	new base physical address (PFN)
@@ -354,11 +353,11 @@ static void cr_map_set_pfn_base(struct page_ent *pe, int level, uintptr_t pfn_ba
 }
 
 /**
- * cr_map_translate_pfn_base() - translate {PML4,PDP,PD,PT} entry base address VPN to VA
+ * cr_map_translate_pfn_base() - translate {PML4,PDP,PD,PT} entry bitshifted virtual base address to VA
  * @pe:		pointer to {PML4,PDP,PD,PT} entry
  * @level:	4 if PML4, 3 if PDP, 2 if PD, 1 if PT
  *
- * Return: Virtual address corresponding to entry base address
+ * Return: Virtual address corresponding to entry virtual base address
  */
 
 static void *cr_map_translate_pfn_base(struct page_ent *pe, int level)
@@ -391,9 +390,15 @@ static void *cr_map_translate_pfn_base(struct page_ent *pe, int level)
 }
 
 /**
- * cr_map_translate() - translate all {PML4,PDP,PD,PT} entry base addresses to PFN
+ * cr_map_translate() - translate all {PML4,PDP,PD,PT} entry virtual base addresses to PFN
  * @pe:		pointer to {PML4,PDP,PD,PT} to translate
  * @level:	4 if PML4, 3 if PDP, 2 if PD, 1 if PT
+ *
+ * Translate base addresses for all present mappings in pe according to
+ * level, being either a PML4, PDP, PD, or PT, from bitshifted VA to physical
+ * addresses (PFN.)
+ * There must not be any further calls to cr_map_page{,s}() after this
+ * function returns.
  *
  * Return: Nothing
  */
@@ -421,7 +426,7 @@ static void cr_map_translate(struct page_ent *pt_cur, int level)
 }
 
 /**
- * cr_map_page() - recursively create one {1G,2M,4K} mapping from VA to PFN
+ * cr_map_page() - recursively create one {1G,2M,4K} mapping from VA to PFN in {PML4,PDP,PD,PT}
  * @pt_cur:	pointer to {PML4,PDP,PD,PT} to map into
  * @va:		virtual address to map at
  * @pfn:	physical address (PFN) to map
@@ -431,6 +436,15 @@ static void cr_map_translate(struct page_ent *pt_cur, int level)
  * @level:	4 if PML4, 3 if PDP, 2 if PD, 1 if PT
  * @map_base:	map heap base address
  * @map_limit:	map heap limit address
+ *
+ * Create {1G,2M,4K} mapping for pfn at va in the {PML4,PDP,PD,PT}
+ * specified by page_size, pt_cur, and level using the supplied extra_bits
+ * and page_nx bit. Lower-order page tables are recursively created on
+ * demand. Newly created {PDP,PD,PT} are allocated from the map heap in
+ * units of the page size (4096) without blocking.
+ * The page tables produced by this function must have their base addresses
+ * translated from bitshifted VA to physical addresses (PFN) prior to being
+ * used.
  *
  * Return: 0 on success, <0 otherwise
  */
@@ -472,10 +486,7 @@ static int cr_map_page(struct page_ent *pt_cur, uintptr_t *va, uintptr_t pfn, si
 			pt_next = (struct page_ent *)*map_base;
 			*map_base += PAGE_SIZE;
 		}
-		CR_INIT_PAGE_ENT(&pt_cur[pt_idx], extra_bits, 0);
-		if (page_nx) {
-			pt_cur[pt_idx].nx = 1;
-		}
+		CR_INIT_PAGE_ENT(&pt_cur[pt_idx], extra_bits, page_nx);
 		cr_map_set_pfn_base(&pt_cur[pt_idx], level,
 			CR_VA_TO_VPN(pt_next));
 	} else {
@@ -486,15 +497,23 @@ static int cr_map_page(struct page_ent *pt_cur, uintptr_t *va, uintptr_t pfn, si
 }
 
 /**
- * cr_map_pages() - create continuous VA to PFN mappings
+ * cr_map_pages() - create continuous VA to PFN mappings in PML4
  * @pml4:	pointer to PML4 to map into
  * @va_base:	base virtual address to map at
  * @pfn_base:	base physical address (PFN) to map
  * @pfn_limit:	physical address limit (PFN)
  * @extra_bits:	extra bits to set in {PML4,PDP,PD,PT} entry/ies
  * @page_nx:	NX bit to set or clear in {PML4,PDP,PD,PT} entry/ies
- * @map_base:	XXmap heap base address
+ * @map_base:	map heap base address
  * @map_limit:	map heap limit address
+ *
+ * Create {1G,2M,4K} mappings for each PFN within pfn_base..pfn_limit
+ * starting at va_base in pml4 using the supplied extra_bits and page_nx
+ * bit. {1G,2M} mappings are created whenever {1G,2M}-aligned VA/PFN
+ * blocks are encountered; unaligned {1G,2M} VA/PFN blocks are allocated
+ * in units of {2M,4K} relative to alignment. The map heap along with
+ * most other parameters are passed through to cr_map_page() for each
+ * page mapped.
  *
  * Return: 0 on success, <0 otherwise
  */
@@ -799,6 +818,14 @@ void clearram_exit(void)
 
 /**
  * clearram_init() - kernel module entry point
+ *
+ * Initialise the map on the current processor with page tables mapping
+ * physical RAM continuously at 0x0ULL, skipping page frames allocated to the
+ * map itself and to the code pages spanning cr_clear_base..cr_clear_limit.
+ * The code is mapped both at its current VA as well as at the top of VA. This
+ * allows cr_clear() to zero-fill its own pages up to a certain point. The GDT,
+ * IDT, and stack are left untouched by cr_clear() and are thus not mapped.
+ * Create the character device to allow user-mode to trigger calling cl_clear().
  * 
  * Return: 0 on success, <0 on failure
  */
@@ -814,18 +841,16 @@ int clearram_init(void)
 	int err;
 
 	/*
-	 * Enforce max. 4 KB size constraint on cr_clear()
+	 * Enforce page alignment & max. 2 * PAGE_SIZE size constraint on cr_clear()
 	 * Obtain total amount of page frames on host
-	 * Derive amount of PT, PD, and PDP required to map
-	 * Add 1 PT, 1 PD, and 1 PDP to amount of page frames required to map .clearram
+	 * Derive max. amount of {PML4,PDP,PD,PT} required to map
 	 */
+
 	cr_clear_base = (uintptr_t)&cr_clear;
 	if ( (cr_clear_base & 0xfff)
 	||  ((cr_clear_limit - cr_clear_base) > (2 * PAGE_SIZE))) {
 		return -EINVAL;
-	}
-
-	cr_map_npages = 0;
+	};
 	INIT_CRPW_PARAMS(&crpw_params);
 	while ((err = cr_pmem_walk(&crpw_params, &pfn_block_base,
 			&pfn_block_limit)) == 1) {
@@ -834,20 +859,19 @@ int clearram_init(void)
 	if (err < 0) {
 		return err;
 	}
-
 	cr_map_npages =
 		      (CR_DIV_ROUND_UP_ULL(cr_map_npages, (512)))		/* Page Tables */
 		    + (CR_DIV_ROUND_UP_ULL(cr_map_npages, (512 * 512)))		/* Page Directories */
 		    + (CR_DIV_ROUND_UP_ULL(cr_map_npages, (512 * 512 * 512)))	/* Page Directory Pointer pages */
 		    + (1);							/* Page Map Level 4 */
-	cr_map_npages += (1 + 1 + 1);						/* {PDP,PD,PT} to map code at top of VA */
-	cr_map_npages += (1 + 1 + 1);						/* {PDP,PD,PT} to map code at original VA */
+	cr_map_npages += (2 * (1 + 1 + 1));					/* {PDP,PD,PT} to map code at top of VA */
+	cr_map_npages += (2 * (1 + 1 + 1));					/* {PDP,PD,PT} to map code at original VA */
 
 	/*
-	 * Allocate paging-related tables page frames & PFN list
-	 * Initialise map
-	 * Create & sort PFN list
+	 * Initialise map heap
+	 * Initialise, fill, and numerically sort map heap PFN list
 	 */
+
 #if defined(__linux__)
 	cr_map = cr_maps_alloc(cr_map_npages * PAGE_SIZE, &cr_map_free);
 #elif defined(__FreeBSD__)
@@ -855,11 +879,7 @@ int clearram_init(void)
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
 	if (!cr_map) {
 		return clearram_exit(), -ENOMEM;
-	} else {
-		map_limit = (uintptr_t)cr_map + (cr_map_npages * PAGE_SIZE);
-		map_cur = (uintptr_t)cr_map + PAGE_SIZE;
-		cr_pml4 = cr_map;
-	}
+	};
 #if defined(__linux__)
 	cr_map_pfns = cr_maps_alloc((cr_map_npages + 1) * sizeof(uintptr_t), &cr_map_pfns_free);
 #elif defined(__FreeBSD__)
@@ -881,10 +901,15 @@ int clearram_init(void)
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
 
 	/*
-	 * Iterate over consecutive page frame nodes
-	 * Given PFN list match, map prefix, otherwise, map everything
+	 * Set VA to 0x0ULL, initialise PML4 from map heap
+	 * Walk physical RAM, skipping map heap page frames
+	 * Map consecutive ranges of at least 1 page frame to current VA
 	 */
+
 	va = 0x0LL;
+	cr_pml4 = cr_map;
+	map_limit = (uintptr_t)cr_map + (cr_map_npages * PAGE_SIZE);
+	map_cur = (uintptr_t)cr_map + PAGE_SIZE;
 	INIT_CRPW_PARAMS(&crpw_params);
 	while ((err = cr_pmem_walk(&crpw_params, &pfn_block_base,
 			&pfn_block_limit)) == 1) {
@@ -923,31 +948,34 @@ int clearram_init(void)
 	}
 
 	/*
-	 * Map code page(s)
-	 * Translate VA to PFN
+	 * Map code page(s) at top of VA and at current VA
+	 * Translate map VA to PFN
 	 */
-	pfn_block_base = cr_virt_to_phys(cr_clear_base);
-	err = cr_map_pages(cr_pml4, &va, pfn_block_base,
-			pfn_block_base + 1, 0, 0, &map_cur, map_limit);
-	if (err != 0) {
-		return clearram_exit(), err;
-	}
 
-	va = cr_clear_base;
+	pfn_block_base = cr_virt_to_phys(cr_clear_base);
 	for (int npage = 0; npage < (cr_clear_limit - cr_clear_base); npage++) {
 		pfn_block_base = cr_virt_to_phys(va);
 		err = cr_map_pages(cr_pml4, &va, pfn_block_base,
-				pfn_block_base + 1, 0, 0, &map_cur, map_limit);
+				pfn_block_base + 2, 0, 0, &map_cur, map_limit);
 		if (err != 0) {
 			return clearram_exit(), err;
 		}
 	}
-
+	va = cr_clear_base;
+	for (int npage = 0; npage < (cr_clear_limit - cr_clear_base); npage++) {
+		pfn_block_base = cr_virt_to_phys(va);
+		err = cr_map_pages(cr_pml4, &va, pfn_block_base,
+				pfn_block_base + 2, 0, 0, &map_cur, map_limit);
+		if (err != 0) {
+			return clearram_exit(), err;
+		}
+	}
 	cr_map_translate(cr_pml4, 4);
 
 	/*
 	 * Create cdev
 	 */
+
 #if defined(__linux__)
 	cr_cdev_major = register_chrdev(0, "clearram", &cr_cdev_fops);
 	if (cr_cdev_major < 0) {
@@ -980,21 +1008,29 @@ int clearram_init(void)
 
 #if defined(__linux__)
 #ifdef CONFIG_SMP
+struct csc_params {
+	spinlock_t	lock;
+	int		ncpus_stopped;
+};
+
 /**
  * cr_stop_cpu() - stop single CPU with serialisation
- * @info:	pointer to stop_cpus_queue wait queue
+ * @info:	pointer to cr_stop_cpu() parameters
  *
  * Return: Nothing
  */
 
 static void cr_stop_cpu(void *info)
 {
-	wait_queue_head_t *stop_cpus_queue;
+	struct csc_params *params;
 
-	stop_cpus_queue = info;
-	wake_up(stop_cpus_queue);
 	__asm volatile(
-		"\t	cli\n"
+		"\t	cli\n");
+	params = info;
+	spin_lock(&params->lock);
+	params->ncpus_stopped++;
+	spin_unlock(&params->lock);
+	__asm volatile(
 		"\t1:	hlt\n"
 		"\t	jmp 1b\n");
 }
@@ -1007,17 +1043,22 @@ static void cr_stop_cpu(void *info)
 
 static void cr_stop_cpus(void)
 {
-	wait_queue_head_t stop_cpus_queue;
-	int ncpu_cur, ncpus, ncpu;
+	struct csc_params csc_params;
+	int ncpu_this, ncpus, ncpu, ncpus_stopped;
 
-	init_waitqueue_head(&stop_cpus_queue);
-	ncpu_cur = smp_processor_id();
-	for (ncpu = 0, ncpus = num_online_cpus(); ncpu < ncpus; ncpu++) {
-		if (ncpu != ncpu_cur) {
-			smp_call_function_single(ncpu, cr_stop_cpu, &stop_cpus_queue, 0);
+	spin_lock_init(&csc_params.lock);
+	csc_params.ncpus_stopped = 0;
+	for (ncpu = 0, ncpu_this = smp_processor_id(), ncpus = num_online_cpus();
+			ncpu < ncpus; ncpu++) {
+		if (ncpu != ncpu_this) {
+			smp_call_function_single(ncpu, cr_stop_cpu, &csc_params, 0);
 		}
 	}
-	wait_event(stop_cpus_queue, 1);
+	do {
+		spin_lock(&csc_params.lock);
+		ncpus_stopped = csc_params.ncpus_stopped;
+		spin_unlock(&csc_params.lock);
+	} while (ncpus_stopped < (ncpus - 1));
 }
 #endif /* CONFIG_SMP */
 #elif defined(__FreeBSD__)
@@ -1026,10 +1067,11 @@ static void cr_stop_cpus(void)
 /**
  * cr_clear() - setup CPU(s) and zero-fill RAM
  *
- * Stop all other CPUs, if any, setup the CPU environment with our PML4,
- * and zero-fill physical memory. As the code pages are mapped at the top
- * of VA, this will eventually cause a trigger fault whilst still zero-
- * filling as much as possible.
+ * Disable preemption on the current CPU and stop all other CPUs, if
+ * any, which may block briefly. Setup CR3 with our PML4, flush the TLB,
+ * and zero-fill physical memory using REP STOSQ. As the code pages are
+ * mapped at the top of VA, this will eventually cause a trigger fault
+ * whilst still zero-filling as much as possible.
  *
  * Return: Nothing
  */
@@ -1038,6 +1080,7 @@ static void __attribute__((aligned(PAGE_SIZE))) cr_clear(void)
 {
 #if defined(__linux__)
 	int this_cpu;
+#elif defined(__FreeBSD__)
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
 	struct cr3 cr3;
 
