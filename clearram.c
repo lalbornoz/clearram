@@ -24,7 +24,6 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/sort.h>
-#include <linux/wait.h>
 #include <linux/vmalloc.h>
 
 #ifndef CONFIG_X86_64
@@ -112,9 +111,8 @@ struct page_ent_2M {
 #define CR_INIT_PAGE_ENT(pe, bits_extra)				\
 	do {								\
 		*((unsigned long long *)((pe))) = 0ULL;			\
-		(pe)->bits = PE_BIT_PRESENT | PE_BIT_READ_WRITE |	\
-			PE_BIT_USER_SUPERVISOR |			\
-			PE_BIT_WRITE_THROUGH | (bits_extra);		\
+		(pe)->bits = PE_BIT_PRESENT |				\
+			PE_BIT_CACHE_DISABLE | (bits_extra);		\
 	} while (0)
 #define CR_PAGE_ENT_IDX_MASK	0x1ff
 #define CR_VA_TO_PML4_IDX(va)	(((va) >> (9 + 9 + 9 + 12)) & CR_PAGE_ENT_IDX_MASK)
@@ -149,8 +147,8 @@ static uintptr_t cr_virt_to_phys(uintptr_t va);
 static void cr_map_set_pfn_base( struct page_ent *pe, int level, uintptr_t pfn_base);
 static void *cr_map_translate_pfn_base( struct page_ent *pe, int level);
 static void cr_map_translate(struct page_ent *pt_cur, int level);
-static int cr_map_page(struct page_ent *pt_cur, uintptr_t *va, uintptr_t pfn, size_t page_size, int level, uintptr_t *map_base, uintptr_t map_limit);
-static int cr_map_pages(struct page_ent *pml4, uintptr_t *va_base, uintptr_t pfn_base, uintptr_t pfn_limit, uintptr_t *map_base, uintptr_t map_limit);
+static int cr_map_page(struct page_ent *pt_cur, uintptr_t *va, uintptr_t pfn, size_t page_size, enum pe_bits extra_bits, int page_nx, int level, uintptr_t *map_base, uintptr_t map_limit);
+static int cr_map_pages(struct page_ent *pml4, uintptr_t *va_base, uintptr_t pfn_base, uintptr_t pfn_limit, enum pe_bits extra_bits, int page_nx, uintptr_t *map_base, uintptr_t map_limit);
 
 /* Kernel module {exit,entry} point and helper subroutines */
 #if defined(__linux__)
@@ -160,7 +158,28 @@ static d_write_t __attribute__((noreturn)) cr_cdev_write;
 #endif /* defined(__linux__) || defined(__FreBSD__) */
 static int cr_map_pfns_compare(const void *lhs, const void *rhs);
 static void *cr_maps_alloc(unsigned long size, void (**map_free)(const void *));
-static int cr_node_iterate(uintptr_t *ppfn_base, uintptr_t *ppfn_limit);
+#if defined(__linux__)
+struct crpw_params {
+	unsigned	new_nid:1, restart:1, fini:1;
+	int		nid;
+	uintptr_t	node_base, node_limit;
+	uintptr_t	pfn_cur;
+	uintptr_t	last_base, last_limit;
+};
+#define INIT_CRPW_PARAMS(p) do {		\
+		memset((p), 0, sizeof(*(p)));	\
+		(p)->restart = 1;		\
+		(p)->new_nid = 1;		\
+	} while(0)
+#elif defined(__FreeBSD__)
+struct crpw_params {
+	int		nid;
+};
+#define INIT_CRPW_PARAMS(p) do {		\
+		p->nid = nid;			\
+	} while(0)
+#endif /* defined(__linux__) || defined(__FreBSD__) */
+static int cr_pmem_walk(struct crpw_params *params, uintptr_t *ppfn_base, uintptr_t *ppfn_limit);
 void clearram_exit(void);
 int clearram_init(void);
 #ifdef __FreeBSD__
@@ -213,8 +232,8 @@ struct file_operations	cr_cdev_fops = {
 /* Character device node major number, class, and device pointers. */
 static
 int			cr_cdev_major = 0;
-static
 struct class *		cr_cdev_class = NULL;
+EXPORT_SYMBOL(cr_cdev_class);
 static
 struct device *		cr_cdev_device = NULL;
 #elif defined(__FreeBSD__)
@@ -246,15 +265,20 @@ cr_virt_to_phys(
 	pud_t *		pud;
 	pmd_t *		pmd;
 	pte_t *		pte;
+	uintptr_t	pfn;
 
-	if (!(pgd = pgd_offset(current->mm, va))
-	||  !(pud = pud_offset(pgd, va))
-	||  !(pmd = pmd_offset(pud, va))
-	||  !(pte = pte_offset_map(pmd, va))) {
-		return -EINVAL;
-	} else {
-		return ((*(unsigned long *)pte) >> 12) & 0xffffffffff;
+	pgd = pgd_offset(current->mm, va);
+	pud = pud_offset(pgd, va);
+	if (pud_val(*pud) & _PAGE_PSE) {
+		return ((*(unsigned long *)pud) >> 13) & 0xffffffffff;
 	};
+	pmd = pmd_offset(pud, va);
+	if (pmd_val(*pmd) & _PAGE_PSE) {
+		return ((*(unsigned long *)pud) >> 13) & 0xffffffffff;
+	};
+	pte = pte_offset_map(pmd, va);
+	pfn = ((*(unsigned long *)pte) >> 12) & 0xffffffffff;
+	return pfn;
 #elif defined(__FreeBSD__)
 	return vtophys(va);
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
@@ -359,28 +383,29 @@ cr_map_page(
 	uintptr_t *		va,
 	uintptr_t		pfn,
 	size_t			page_size,
+	enum pe_bits		extra_bits,
+	int			page_nx,
 	int			level,
 	uintptr_t *		map_base,
 	uintptr_t		map_limit
 )
 {
-	int			map_direct, extra_bits;
+	int			map_direct;
 	struct page_ent *	pt_next;
 	unsigned long		pt_idx;
 
-	extra_bits = 0;
 	switch (level) {
 	case 4: pt_idx = CR_VA_TO_PML4_IDX(*va);
 		map_direct = 0;
 		break;
 	case 3:	pt_idx = CR_VA_TO_PDP_IDX(*va);
 		if ((map_direct = (page_size == CR_PDPE_SIZE))) {
-			extra_bits = PE_BIT_PAGE_SIZE;
+			extra_bits |= PE_BIT_PAGE_SIZE;
 		};
 		break;
 	case 2:	pt_idx = CR_VA_TO_PD_IDX(*va);
 		if ((map_direct = (page_size == CR_PDE_SIZE))) {
-			extra_bits = PE_BIT_PAGE_SIZE;
+			extra_bits |= PE_BIT_PAGE_SIZE;
 		};
 		break;
 	case 1:	pt_idx = CR_VA_TO_PT_IDX(*va);
@@ -391,6 +416,9 @@ cr_map_page(
 	};
 	if (map_direct) {
 		CR_INIT_PAGE_ENT(&pt_cur[pt_idx], extra_bits);
+		if (page_nx) {
+			pt_cur[pt_idx].nx = 1;
+		};
 		cr_map_set_pfn_base(&pt_cur[pt_idx], level, pfn);
 		(*va) += PAGE_SIZE * page_size;
 		return 0;
@@ -402,14 +430,17 @@ cr_map_page(
 			pt_next = (struct page_ent *)*map_base;
 			*map_base += PAGE_SIZE;
 		};
-		CR_INIT_PAGE_ENT(&pt_cur[pt_idx], 0);
+		CR_INIT_PAGE_ENT(&pt_cur[pt_idx], extra_bits);
+		if (page_nx) {
+			pt_cur[pt_idx].nx = 1;
+		};
 		cr_map_set_pfn_base(&pt_cur[pt_idx], level,
 			CR_VA_TO_VPN(pt_next));
 	} else {
 		pt_next = cr_map_translate_pfn_base(&pt_cur[pt_idx], level);
 	};
-	return cr_map_page(pt_next, va, pfn, page_size, level - 1,
-			map_base, map_limit);
+	return cr_map_page(pt_next, va, pfn, page_size, extra_bits,
+			page_nx, level - 1, map_base, map_limit);
 }
 
 static
@@ -419,6 +450,8 @@ cr_map_pages(
 	uintptr_t *		va_base,
 	uintptr_t		pfn_base,
 	uintptr_t		pfn_limit,
+	enum pe_bits		extra_bits,
+	int			page_nx,
 	uintptr_t *		map_base,
 	uintptr_t		map_limit
 )
@@ -440,8 +473,8 @@ cr_map_pages(
 			npages = 1;
 		};
 		if ((err = cr_map_page(pml4, va_base,
-				pfn, npages, 4,
-				map_base, map_limit)) != 0) {
+				pfn, npages, extra_bits, page_nx,
+				4, map_base, map_limit)) != 0) {
 			return err;
 		};
 	};
@@ -546,75 +579,106 @@ cr_maps_alloc(
 #if defined(__linux__)
 static
 int
-cr_node_iterate(
-	uintptr_t *	ppfn_base,
-	uintptr_t *	ppfn_limit
+cr_pmem_walk_nocombine(
+	struct crpw_params *	params,
+	uintptr_t *		psection_base,
+	uintptr_t *		psection_limit
 )
 {
-	static int		nid = 0;
-	static uintptr_t	pfn_node_start = 0,
-				pfn_node_limit = 0,
-				pfn = 0;
 	struct mem_section *	ms;
 
+	while (params->nid < MAX_NUMNODES) {
 #ifdef CONFIG_NUMA
-	for (nid = nid; nid < MAX_NUMNODES; nid++) {
-		if (NODE_DATA(nid)) {
-			break;
+		if (!NODE_DATA(params->nid)) {
+			params->nid++;
+			params->new_nid = 1;
+			continue;
 		};
-	};
 #endif /* CONFIG_NUMA */
-	if ((nid >= MAX_NUMNODES)) {
-		pfn_node_start = pfn_node_limit = pfn = 0;
-		*ppfn_base = *ppfn_limit = 0; nid = 0;
+		if (params->new_nid) {
+			params->new_nid = 0;
+			params->node_base =
+			params->pfn_cur = node_start_pfn(params->nid);
+			params->node_limit = params->node_base +
+				+ node_spanned_pages(params->nid);
+		};
+		for (; params->pfn_cur < params->node_limit; params->pfn_cur += PAGES_PER_SECTION) {
+			ms = __pfn_to_section(params->pfn_cur);
+			if (unlikely(!valid_section(ms))
+			||  unlikely(!present_section(ms))) {
+				continue;
+			} else {
+				*psection_base = params->pfn_cur;
+				*psection_limit = min(params->node_limit,
+					params->pfn_cur + PAGES_PER_SECTION);
+				params->pfn_cur = *psection_limit;
+				return 1;
+			};
+		};
+		params->nid++;
+		params->new_nid = 1;
+	};
+	return 0;
+}
+
+static
+int
+cr_pmem_walk(
+	struct crpw_params *	params,
+	uintptr_t *		psection_base,
+	uintptr_t *		psection_limit
+)
+{
+	int		err;
+	uintptr_t	section_base, section_limit;
+
+	if (params->fini) {
 		return 0;
 	} else
-	if (!pfn) {
-		pfn_node_start = node_start_pfn(nid);
-		pfn_node_limit = pfn_node_start + node_spanned_pages(nid);
-		*ppfn_base = pfn = pfn_node_start;
-		*ppfn_limit = 0;
-	};
-
-	for (pfn = pfn; pfn < pfn_node_limit; pfn += PAGES_PER_SECTION) {
-		ms = __pfn_to_section(pfn);
-		if (unlikely(!valid_section(ms))
-		||  unlikely(pfn_to_nid(pfn) != nid)) {
+	while ((err = cr_pmem_walk_nocombine(params,
+			&section_base, &section_limit)) > 0) {
+		if (params->restart) {
+			params->restart = 0;
+			params->last_base = section_base;
+			params->last_limit = section_limit;
+		} else
+		if (params->last_limit == section_base) {
+			params->last_limit = section_limit;
 			continue;
-		} else
-		if (!present_section_nr(pfn_to_section_nr(pfn))) {
-			*ppfn_limit = pfn;
-			pfn = *ppfn_limit + 1;
-			return 1;
-		} else
-		if ((pfn + PAGES_PER_SECTION) >= pfn_node_limit) {
-			*ppfn_limit = pfn_node_limit;
-			pfn = 0, nid++;
-			return 1;
 		} else {
-			continue;
+			*psection_base = params->last_base;
+			*psection_limit = section_base;
+			params->last_base = section_base;
+			params->last_limit = section_limit;
+			return 1;
 		};
 	};
-	return nid++, 1;
+	params->fini = 1;
+	if ((err == 0)
+	&&  (params->last_limit - params->last_base)) {
+		*psection_base = params->last_base;
+		*psection_limit = params->last_limit;
+		return 1;
+	} else {
+		return err;
+	};
 }
 #elif defined(__FreeBSD__)
 static
 int
 cr_node_iterate(
-	uintptr_t *	ppfn_base,
-	uintptr_t *	ppfn_limit
+	struct crpw_params *	params,
+	uintptr_t *		psection_base,
+	uintptr_t *		psection_limit
 )
 {
-	static int	nid = 0;
-
-	if (!phys_avail[nid + 1]) {
-		*ppfn_base = *ppfn_limit = 0;
-		return 0;
+	if (!phys_avail[params->nid + 1]) {
+		*psection_base = *psection_limit = 0;
+		return params->nid = 0, 0;
 	} else {
-		*ppfn_base = phys_avail[nid];
-		*ppfn_limit = phys_avail[nid + 1];
-		nid += 2;
-		return 1;
+		*psection_base = phys_avail[params->nid];
+		*psection_limit = phys_avail[params->nid + 1];
+		return params->nid += 2, 1;
 	};
 }
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
@@ -660,6 +724,7 @@ clearram_init(
 {
 	uintptr_t			cr_clear_base;
 	extern uintptr_t		cr_clear_limit;
+	struct crpw_params		crpw_params;
 	uintptr_t			map_cur, map_limit;
 	size_t				npfn;
 	uintptr_t			va, pfn_block_base, pfn_block_limit;
@@ -673,12 +738,13 @@ clearram_init(
 	 */
 	cr_clear_base = (uintptr_t)&cr_clear;
 	if ( (cr_clear_base & 0xfff)
-	||  ((cr_clear_limit - cr_clear_base) > PAGE_SIZE)) {
+	||  ((cr_clear_limit - cr_clear_base) > (2 * PAGE_SIZE))) {
 		return -EINVAL;
 	};
 
 	cr_map_npages = 0;
-	while ((err = cr_node_iterate(&pfn_block_base,
+	INIT_CRPW_PARAMS(&crpw_params);
+	while ((err = cr_pmem_walk(&crpw_params, &pfn_block_base,
 			&pfn_block_limit)) == 1) {
 		cr_map_npages += (pfn_block_limit - pfn_block_base);
 	};
@@ -736,7 +802,8 @@ clearram_init(
 	 * Given PFN list match, map prefix, otherwise, map everything
 	 */
 	va = 0x0LL;
-	while ((err = cr_node_iterate(&pfn_block_base,
+	INIT_CRPW_PARAMS(&crpw_params);
+	while ((err = cr_pmem_walk(&crpw_params, &pfn_block_base,
 			&pfn_block_limit)) == 1) {
 		for (npfn = 0; npfn < (cr_map_npages + 1); npfn++) {
 			if ((cr_map_pfns[npfn] <  pfn_block_base)
@@ -748,7 +815,8 @@ clearram_init(
 				continue;
 			} else {
 				err = cr_map_pages(cr_pml4, &va, pfn_block_base,
-					cr_map_pfns[npfn], &map_cur, map_limit);
+					cr_map_pfns[npfn], PE_BIT_READ_WRITE, 1,
+					&map_cur, map_limit);
 				if (err != 0) {
 					return clearram_exit(), err;
 				};
@@ -759,8 +827,9 @@ clearram_init(
 			};
 		};
 		if (pfn_block_base < pfn_block_limit) {
-			err = cr_map_pages(cr_pml4, &va, pfn_block_base, pfn_block_limit,
-				&map_cur, map_limit);
+			err = cr_map_pages(cr_pml4, &va,
+				pfn_block_base, pfn_block_limit,
+				PE_BIT_READ_WRITE, 1, &map_cur, map_limit);
 			if (err != 0) {
 				return clearram_exit(), err;
 			};
@@ -776,16 +845,19 @@ clearram_init(
 	 */
 	pfn_block_base = cr_virt_to_phys(cr_clear_base);
 	err = cr_map_pages(cr_pml4, &va, pfn_block_base,
-			pfn_block_base + 1, &map_cur, map_limit);
+			pfn_block_base + 1, 0, 0, &map_cur, map_limit);
 	if (err != 0) {
 		return clearram_exit(), err;
 	};
 
 	va = cr_clear_base;
-	err = cr_map_pages(cr_pml4, &va, pfn_block_base,
-			pfn_block_base + 1, &map_cur, map_limit);
-	if (err != 0) {
-		return clearram_exit(), err;
+	for (int npage = 0; npage < (cr_clear_limit - cr_clear_base); npage++) {
+		pfn_block_base = cr_virt_to_phys(va);
+		err = cr_map_pages(cr_pml4, &va, pfn_block_base,
+				pfn_block_base + 1, 0, 0, &map_cur, map_limit);
+		if (err != 0) {
+			return clearram_exit(), err;
+		};
 	};
 
 	cr_map_translate(cr_pml4, 4);
@@ -850,13 +922,12 @@ cr_stop_cpu(
 	void *	info
 )
 {
-	wait_queue_head_t	*stop_cpus_queue;
+	wait_queue_head_t *	stop_cpus_queue;
 
 	stop_cpus_queue = info;
-	__asm volatile(
-		"\t	cli\n");
 	wake_up(stop_cpus_queue);
 	__asm volatile(
+		"\t	cli\n"
 		"\t1:	hlt\n"
 		"\t	jmp 1b\n");
 }
@@ -876,8 +947,8 @@ cr_stop_cpus(
 		if (ncpu != ncpu_cur) {
 			smp_call_function_single(ncpu, cr_stop_cpu, &stop_cpus_queue, 0);
 		};
-		wait_event(stop_cpus_queue, 1);
 	};
+	wait_event(stop_cpus_queue, 1);
 }
 #endif /* CONFIG_SMP */
 #elif defined(__FreeBSD__)
@@ -913,30 +984,27 @@ cr_clear(
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
 	CR_INIT_CR3(&cr3, cr_virt_to_phys((uintptr_t)cr_pml4));
 	__asm volatile(
+		"\tcld\n"
 		"\tcli\n"
-		"\n"
+		"\tmovq		%0,		%%rcx\n"	/* New CR3 value */
 		"\tmovq		%%cr4,		%%rax\n"
 		"\tmovq		%%rax,		%%rbx\n"
-		"\tandb		$0x7f,		%%al\n"		/* Clear PGE (Page Global Enabled) bit */
-		"\tmovq		%%rax,		%%cr4\n"	/* Disable paging */
-		"\tmovq		%0,		%%r8\n"
-		"\tmovq		%%r8,		%%cr3\n"	/* Write PML4 PFN */
-		"\tmovq		%%rbx,		%%cr4\n"	/* Re-enable paging */
-		"\n"
-		"\tcld\n"
+		"\tandb		$0x7f,		%%al\n"
+		"\tmovq		%%rax,		%%cr4\n"	/* Disable PGE */
+		"\tmovq		%%rcx,		%%cr3\n"	/* Set CR3 */
+		"\tmovq		%%rbx,		%%cr4\n"	/* Enable PGE */
 		"\txorq		%%rcx,		%%rcx\n"
 		"\tdecq		%%rcx\n"			/* Count = 0xFFFFFFFFFFFFFFFFLL */
 		"\txorq		%%rax,		%%rax\n"	/* Store = 0x0000000000000000LL */
 		"\txorq		%%rdi,		%%rdi\n"	/* Dest. = 0x0000000000000000LL */
 		"\trep		stosq\n"			/* Zero-fill & triple fault */
-		"\t1:		hlt\n"
-		"\t		jmp 1b\n"
-		"\n"
+		"\tud2\n"
 		"\t.align	0x1000\n"
 		"\tcr_clear_limit:\n"
 		"\t.quad	.\n"
 		:: "r"(cr3)
-		: "r8", "rax", "rbx", "rcx", "rdi", "flags");
+		: "r8", "rax", "rbx", "rcx", "rdx",
+		  "rdi", "flags", "memory");
 }
 
 /*
