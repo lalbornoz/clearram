@@ -24,6 +24,7 @@
 #include <sys/kernel.h>
 #include <sys/conf.h>
 #include <sys/uio.h>
+#include <sys/smp.h>
 #include <sys/malloc.h>
 #include <vm/vm.h>
 #include <vm/pmap.h>
@@ -128,6 +129,13 @@ int cr_init_cdev(struct clearram_exit_params *params)
 
 void cr_cpu_stop_all(void)
 {
+#ifdef SMP
+	cpuset_t other_cpus;
+
+	other_cpus = all_cpus;
+	CPU_CLR(PCPU_GET(cpuid), &other_cpus);
+	stop_cpus(other_cpus);
+#endif
 }
 
 /**
@@ -145,7 +153,6 @@ void cr_exit(struct clearram_exit_params *params)
 		cr_free(params->map, params->map_free_fn);
 	}
 }
-
 
 /*
  * vim:fileencoding=utf-8 foldmethod=marker noexpandtab sw=8 ts=8 tw=120
