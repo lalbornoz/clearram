@@ -17,40 +17,11 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
-#if defined(__linux__)
-#include <linux/device.h>
-#include <linux/fs.h>
-#include <linux/mm.h>
-#include <linux/module.h>
-#include <linux/slab.h>
-#include <linux/sort.h>
-#include <linux/vmalloc.h>
-#elif defined(__FreeBSD__)
-#include <sys/types.h>
-#include <sys/module.h>
-#include <sys/systm.h>
-#include <sys/param.h>
-#include <sys/kernel.h>
-#include <sys/conf.h>
-#include <sys/uio.h>
-#include <sys/malloc.h>
-#include <vm/vm.h>
-#include <vm/pmap.h>
-#else
-#error Only Linux and FreeBSD are supported at present.
-#endif /* defined(__linux__) || defined(__FreBSD__) */
-
-#ifndef __LP64__
-#error Only x86_64 is supported at present.
-#endif /* !__LP64__ */
-#if PAGE_SIZE != 4096
-#error Only 4 KB pages are supported at present.
-#endif /* PAGE_SIZE != 4096 */
-
-#include "amd64def.h"
+#ifndef _OSDEF_H_
+#define _OSDEF_H_
 
 /* 
- * Data structures
+ * OS-dependent data structures
  */
 
 /*
@@ -86,52 +57,39 @@ struct csc_params {
 #endif /* defined(__linux__) && defined(CONFIG_SMP) */
 
 /*
- * OS-dependent subroutines
+ * OS-dependent preprocessor macros and subroutines
  */
 
-/*
- * Round up 64-bit integer ll to next multiple of 32-bit integer d.
- * (from linux-source-4.7/include/{asm-generic/div64.h,linux/kernel.h}.
+/**
+ * Platform- & type-independent qsort
  */
-#define cr_do_div(n,base) ({					\
-	uint32_t __base = (base);				\
-	uint32_t __rem;						\
-	__rem = ((uint64_t)(n)) % __base;			\
-	(n) = ((uint64_t)(n)) / __base;				\
-	__rem;							\
- })
-#define CR_DIV_ROUND_UP_ULL(ll,d) \
-	({ unsigned long long _tmp = (ll)+(d)-1; cr_do_div(_tmp, d); _tmp; })
 #if defined(__linux__)
-int cr_pmem_walk_nocombine(struct cpw_params *params, uintptr_t *psection_base, uintptr_t *psection_limit);
+#define CR_SORT(a, b, c, d)	sort(a, b, c, d, NULL)
+#elif defined(__FreeBSD__)
+#define CR_SORT(a, b, c, d)	qsort(a, b, c, d)
+#endif /* defined(__linux__) || defined(__FreBSD__) */
+#if defined(__linux__)
 ssize_t __attribute__((noreturn)) cr_cdev_write(struct file *file __attribute__((unused)), const char __user *buf __attribute__((unused)), size_t len, loff_t *ppos __attribute__((unused)));
-int cr_init_map(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void (**pfree)(const void *));
 #ifdef CONFIG_SMP
 void cr_cpu_stop_one(void *info);
 #endif /* CONFIG_SMP */
 void cr_free(void *p, void (*pfree)(const void *));
-#define CR_SORT(a, b, c, d)	sort(a, b, c, d, NULL)
+int cr_map_init(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void (**pfree)(const void *));
 #elif defined(__FreeBSD__)
 d_write_t __attribute__((noreturn)) cr_cdev_write;
-int cr_init_map(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void *unused);
 void cr_free(void *p, void *unused);
-#define CR_SORT(a, b, c, d)	qsort(a, b, c, d)
+int cr_map_init(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void *unused);
 #endif /* defined(__linux__) || defined(__FreBSD__) */
-int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *ppfn_base, uintptr_t *ppfn_limit);
-uintptr_t cr_virt_to_phys(uintptr_t va);
-int cr_init_cdev(struct clearram_exit_params *params);
+
 void cr_cpu_stop_all(void);
 void cr_exit(struct clearram_exit_params *params);
-
-/* 
- * Kernel module {entry,event} point subroutines
- */
-void __attribute__((aligned(PAGE_SIZE))) cr_clear(void);
+int cr_init_cdev(struct clearram_exit_params *params);
+int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, uintptr_t *psection_limit);
+uintptr_t cr_virt_to_phys(uintptr_t va);
 
 /* 
  * Public variables
  */
-
 #if defined(__linux__)
 /* Character device node file operations */
 extern struct file_operations cr_cdev_fops;
@@ -142,6 +100,7 @@ extern struct cdevsw cr_cdev_fops;
 /* Declare malloc(9) type */
 MALLOC_DECLARE(M_CLEARRAM);
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
+#endif /* _OSDEF_H_ */
 
 /*
  * vim:fileencoding=utf-8 foldmethod=marker noexpandtab sw=8 ts=8 tw=120

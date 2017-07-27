@@ -1,8 +1,4 @@
-.*
+build-FreeBSD/
+build-Linux/
 !.gitignore
-*.ko
-*.mod.c
-modules.order
-Module.symvers
-*.o
-.tmp_versions/
+.*.sw[op]
