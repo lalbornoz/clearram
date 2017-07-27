@@ -17,32 +17,48 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
-#include "clearram.h"
+#include "include/clearram.h"
 
-/* 
- * Kernel module {entry,event} point subroutines
+/**
+ * Subroutine prototypes and variables
  */
-
 /* Virtual address of Page Map Level 4 page */
 struct page_ent *cr_pml4 = NULL;
+
+/* Virtual addresses of exception debugging IDT page,
+ * stack page, and framebuffer pages base */
+uintptr_t cr_debug_idt = 0;
+uintptr_t cr_debug_stack = 0;
+uintptr_t cr_debug_vga = 0;
 
 /* Resources to release when exiting */
 static struct clearram_exit_params cr_exit_params = {0,};
 
-/* Static subroutine prototypes */
-static int cr_init_pfns_compare(const void *lhs, const void *rhs);
 #if defined(__FreeBSD__)
 int clearram_evhand(struct module *m, int what, void *arg);
 #endif /* defined(__FreeBSD__) */
 void clearram_exit(void);
 int clearram_init(void);
 
+/**
+ * OS-specific character device node file operations
+ */
 #if defined(__linux__)
-/* Character device node file operations */
 struct file_operations cr_cdev_fops = {
 	.write = cr_cdev_write,
 };
+#elif defined(__FreeBSD__)
+struct cdevsw cr_cdev_fops = {
+	.d_version = D_VERSION,
+	.d_write = cr_cdev_write,
+	.d_name = "clearram",
+};
+#endif /* defined(__linux__) || defined(__FreeBSD__) */
 
+/**
+ * OS-specific LKM fields
+ */
+#if defined(__linux__)
 module_exit(clearram_exit);
 module_init(clearram_init);
 MODULE_AUTHOR("Lucía Andrea Illanes Albornoz <lucia@luciaillanes.de>");
@@ -50,13 +66,6 @@ MODULE_DESCRIPTION("clearram");
 MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE("clearram");
 #elif defined(__FreeBSD__)
-/* Character device node file operations */
-struct cdevsw cr_cdev_fops = {
-	.d_version = D_VERSION,
-	.d_write = cr_cdev_write,
-	.d_name = "clearram",
-};
-
 moduledata_t clearram_mod = {
 	"clearram", clearram_evhand, NULL,
 };
@@ -64,29 +73,9 @@ MALLOC_DEFINE(M_CLEARRAM, "clearram", "buffer for clearram module");
 DECLARE_MODULE(clearram, clearram_mod, SI_SUB_KLD, SI_ORDER_ANY);
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
 
-/**
- * cr_init_pfns_compare() - page map PFN database numeric sort comparison function
- * @lhs:	left-hand side PFN
- * @rhs:	right-hand side PFN
- *
- * Return: -1, 1, or 0 if lhs_pfn is smaller than, greater than, or equal to rhs_pfn
+/* 
+ * Kernel module {entry,event} point subroutines
  */
-
-int cr_init_pfns_compare(const void *lhs, const void *rhs)
-{
-	uintptr_t lhs_pfn, rhs_pfn;
-
-	lhs_pfn = *(const uintptr_t *)lhs;
-	rhs_pfn = *(const uintptr_t *)rhs;
-	if (lhs_pfn < rhs_pfn) {
-		return -1;
-	} else
-	if (lhs_pfn > rhs_pfn) {
-		return 1;
-	} else {
-		return 0;
-	}
-}
 
 #if defined(__FreeBSD__)
 /**
@@ -140,12 +129,13 @@ int clearram_init(void)
 {
 	int err;
 	struct cpw_params cpw_params;
-	uintptr_t map_npages;
+	uintptr_t map_npages, map_npages_max;
 	uintptr_t code_base;
 	extern uintptr_t cr_clear_limit;
-	struct cmp_params cmp_params;
+	static struct cmp_params cmp_params;
 	size_t npfn;
 	uintptr_t va, pfn_block_base, pfn_block_limit;
+	int level;
 
 	/*
 	 * Initialise parameters
@@ -164,40 +154,45 @@ int clearram_init(void)
 	if (err < 0) {
 		goto fail;
 	}
-	map_npages =  (CR_DIV_ROUND_UP_ULL(map_npages, (512)))				/* Page Tables */
+	map_npages_max
+		    = (CR_DIV_ROUND_UP_ULL(map_npages, (512)))				/* Page Tables */
 		    + (CR_DIV_ROUND_UP_ULL(map_npages, (512 * 512)))			/* Page Directories */
 		    + (CR_DIV_ROUND_UP_ULL(map_npages, (512 * 512 * 512)))		/* Page Directory Pointer pages */
 		    + (1)								/* Page Map Level 4 */
 		    + (((cr_clear_limit - code_base) / PAGE_SIZE) * (1 + 1 + 1))	/* {PDP,PD,PT} to map code at top of VA */
-		    + (((cr_clear_limit - code_base) / PAGE_SIZE) * (1 + 1 + 1));	/* {PDP,PD,PT} to map code at original VA */
+		    + (((cr_clear_limit - code_base) / PAGE_SIZE) * (1 + 1 + 1))	/* {PDP,PD,PT} to map code at original VA */
+#if defined(DEBUG)
+		    + ((1 + 1 + 8 + 1) * (1 + 1 + 1))					/* {PDP,PD,PT} to map {IDT,stack,framebuffer,exception debugging code} page(s) */
+#endif /* defined(DEBUG) */
+	;
 
 	/*
 	 * Initialise map, map filter PFN list, and phys-to-virt map list
 	 * Initialise, fill, and numerically sort map filter PFN list
 	 */
 
-	err = cr_init_map((void **)&cmp_params.map_base,
+	err = cr_map_init((void **)&cmp_params.map_base,
 		(void **)&cmp_params.map_cur, &cmp_params.map_limit,
-		map_npages * PAGE_SIZE, &cr_exit_params.map_free_fn);
+		map_npages_max * PAGE_SIZE, &cr_exit_params.map_free_fn);
 	if (err < 0) {
 		goto fail;
 	}
-	if ((err = cr_init_map((void **)&cpw_params.filter, NULL, NULL,
-			(map_npages + 1) * sizeof(uintptr_t), NULL)) < 0) {
+	if ((err = cr_map_init((void **)&cpw_params.filter, NULL, NULL,
+			(map_npages_max + 1) * sizeof(uintptr_t), NULL)) < 0) {
 		goto fail;
 	} else
-	for (npfn = 0; npfn < map_npages; npfn++) {
+	for (npfn = 0; npfn < map_npages_max; npfn++) {
 		cpw_params.filter[npfn] = cr_virt_to_phys(
 			(uintptr_t)cmp_params.map_base + (npfn * PAGE_SIZE));
 	}
 	cpw_params.filter[npfn] = cr_virt_to_phys(code_base);
-	cpw_params.filter_nmax = map_npages;
-	CR_SORT(cpw_params.filter, map_npages + 1, sizeof(uintptr_t),
+	cpw_params.filter_nmax = map_npages_max;
+	CR_SORT(cpw_params.filter, map_npages_max + 1, sizeof(uintptr_t),
 		&cr_init_pfns_compare);
-	err = cr_init_map((void **)&cmp_params.map_phys_base,
-		(void **)&cmp_params.map_phys_cur,
-		&cmp_params.map_phys_limit,
-		map_npages * sizeof(struct cr_map_phys_node), NULL);
+	err = cr_map_init((void **)&cmp_params.map_phys.map_base,
+		(void **)&cmp_params.map_phys.map_cur,
+		&cmp_params.map_phys.map_limit,
+		map_npages_max * sizeof(struct cr_map_phys_node), NULL);
 	if (err < 0) {
 		goto fail;
 	}
@@ -211,16 +206,20 @@ int clearram_init(void)
 	va = 0x0LL;
 	cmp_params.pml4 = cr_pml4 = (struct page_ent *)cmp_params.map_cur;
 	cmp_params.map_cur += PAGE_SIZE;
-	INIT_CPW_PARAMS(&cpw_params);
-	while ((err = cr_pmem_walk_filter(&cpw_params, &pfn_block_base,
-			&pfn_block_limit)) > 0) {
-		if ((err = cr_map_pages(&cmp_params, &va, pfn_block_base,
-				pfn_block_limit, PE_BIT_READ_WRITE, 1)) != 0) {
-			break;
+	for (level = CMP_LVL_PDP; level > 0; level--) {
+		INIT_CPW_PARAMS(&cpw_params);
+		while ((err = cr_pmem_walk_filter(&cpw_params, &pfn_block_base,
+				&pfn_block_limit)) > 0) {
+			if ((err = cr_map_pages_auto(&cmp_params, &va,
+					pfn_block_base, pfn_block_limit,
+					PE_BIT_READ_WRITE, CMP_BIT_NX_ENABLE,
+					level)) != 0) {
+				break;
+			}
 		}
-	}
-	if (err < 0) {
-		goto fail;
+		if (err < 0) {
+			goto fail;
+		}
 	}
 
 	/*
@@ -229,11 +228,13 @@ int clearram_init(void)
 	 */
 
 	if ((err = cr_map_pages_from_va(&cmp_params, code_base, va,
-			(cr_clear_limit - code_base) / PAGE_SIZE, 0, 0)) < 0) {
+			(cr_clear_limit - code_base) / PAGE_SIZE,
+			0, CMP_BIT_NX_DISABLE)) < 0) {
 		goto fail;
 	} else
 	if ((err = cr_map_pages_from_va(&cmp_params, code_base, code_base,
-			(cr_clear_limit - code_base) / PAGE_SIZE, 0, 0)) < 0) {
+			(cr_clear_limit - code_base) / PAGE_SIZE,
+			0, CMP_BIT_NX_DISABLE)) < 0) {
 		goto fail;
 	} else
 	if ((err = cr_init_cdev(&cr_exit_params)) < 0) {
@@ -242,12 +243,21 @@ int clearram_init(void)
 		cr_exit_params.map = (void *)cmp_params.map_base;
 		err = 0;
 	}
+#if defined(DEBUG)
+	cr_debug_stack = va;
+	cr_debug_idt = cr_debug_stack + PAGE_SIZE;
+	cr_debug_vga = cr_debug_idt + PAGE_SIZE;
+	if ((err = cr_debug_init(&cmp_params, cr_pml4,
+			cr_debug_idt, cr_debug_stack, cr_debug_vga)) < 0) {
+		goto fail;
+	}
+#endif /* defined(DEBUG) */
 
 out:	if (cpw_params.filter) {
 		cr_free(cpw_params.filter, NULL);
 	}
-	if (cmp_params.map_phys_base) {
-		cr_free(cmp_params.map_phys_base, NULL);
+	if (cmp_params.map_phys.map_base) {
+		cr_free(cmp_params.map_phys.map_base, NULL);
 	}
 	return err;
 
@@ -256,48 +266,6 @@ fail:	if (cmp_params.map_base) {
 			cr_exit_params.map_free_fn);
 	}
 	goto out;
-}
-
-/**
- * cr_clear() - setup CPU(s) and zero-fill RAM
- *
- * Disable preemption on the current CPU and stop all other CPUs, if
- * any, which may block briefly. Setup CR3 with our PML4, flush the TLB,
- * and zero-fill physical memory using REP STOSQ. As the code pages are
- * mapped at the top of VA, this will eventually cause a trigger fault
- * whilst still zero-filling as much as possible.
- *
- * Return: Nothing
- */
-
-void __attribute__((aligned(PAGE_SIZE))) cr_clear(void)
-{
-	struct cr3 cr3;
-
-	cr_cpu_stop_all();
-	CR_INIT_CR3(&cr3, cr_virt_to_phys((uintptr_t)cr_pml4), CR3_BIT_WRITE_THROUGH);
-	__asm volatile(
-		"\tcld\n"
-		"\tcli\n"
-		"\tmovq		%0,		%%rcx\n"	/* New CR3 value */
-		"\tmovq		%%cr4,		%%rax\n"
-		"\tmovq		%%rax,		%%rbx\n"
-		"\tandb		$0x7f,		%%al\n"
-		"\tmovq		%%rax,		%%cr4\n"	/* Disable PGE */
-		"\tmovq		%%rcx,		%%cr3\n"	/* Set CR3 */
-		"\tmovq		%%rbx,		%%cr4\n"	/* Enable PGE */
-		"\txorq		%%rcx,		%%rcx\n"
-		"\tdecq		%%rcx\n"			/* Count = 0xFFFFFFFFFFFFFFFFLL */
-		"\txorq		%%rax,		%%rax\n"	/* Store = 0x0000000000000000LL */
-		"\txorq		%%rdi,		%%rdi\n"	/* Dest. = 0x0000000000000000LL */
-		"\trep		stosq\n"			/* Zero-fill & triple fault */
-		"\tud2\n"
-		"\t.align	0x1000\n"
-		"\tcr_clear_limit:\n"
-		"\t.quad	.\n"
-		:: "r"(cr3)
-		: "r8", "rax", "rbx", "rcx", "rdx",
-		  "rdi", "flags", "memory");
 }
 
 /*

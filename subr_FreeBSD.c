@@ -17,18 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
-#include <sys/types.h>
-#include <sys/module.h>
-#include <sys/systm.h>
-#include <sys/param.h>
-#include <sys/kernel.h>
-#include <sys/conf.h>
-#include <sys/uio.h>
-#include <sys/smp.h>
-#include <sys/malloc.h>
-#include <vm/vm.h>
-#include <vm/pmap.h>
-#include "clearram.h"
+#include "include/clearram.h"
 
 /**
  * cr_cdev_write() - character device write(2) file operation subroutine
@@ -46,22 +35,6 @@ int __attribute__((noreturn)) cr_cdev_write(struct cdev *dev __unused, struct ui
 }
 
 /**
- * cr_init_map() - allocate, zero-fill, and map memory
- *
- * Return: 0 on success, >0 otherwise
- */
-
-int cr_init_map(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void *unused)
-{
-	*pbase = malloc(count, M_CLEARRAM, M_WAITOK | M_ZERO);
-	if (!*pbase) {
-		return -ENOMEM;
-	} else {
-		return 0;
-	}
-}
-
-/**
  * cr_free() - free previously allocated memory
  *
  * Return: Nothing
@@ -73,53 +46,21 @@ void cr_free(void *p, void *unused)
 }
 
 /**
- * cr_pmem_walk_combine() - walk physical memory
- * @params:		current walk parameters
- * @psection_base:	pointer to base address of next section found
- * @psection_limit:	pointer to limit address of next section found
- *
- * Return next contiguous set of physical memory on the system.
- * The walk parameters establish the context of the iteration and must
- * be initialised prior to each walk.
- *
- * Return: 0 if no physical memory remains, 1 otherwise
- */
-
-int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, uintptr_t *psection_limit)
-{
-	if (!phys_avail[params->nid + 1]) {
-		*psection_base = *psection_limit = 0;
-		return params->nid = 0, 0;
-	} else {
-		*psection_base = phys_avail[params->nid];
-		*psection_limit = phys_avail[params->nid + 1];
-		return params->nid += 2, 1;
-	}
-}
-
-/**
- * cr_virt_to_phys() - translate virtual address to physical address (PFN) using host page tables
- *
- * Return: Physical address (PFN) mapped by virtual address
- */
-
-uintptr_t cr_virt_to_phys(uintptr_t va)
-{
-	return vtophys(va);
-}
-
-/**
- * cr_init_cdev() - create character device node and related structures
+ * cr_map_init() - allocate, zero-fill, and map memory
  *
  * Return: 0 on success, >0 otherwise
  */
 
-int cr_init_cdev(struct clearram_exit_params *params)
+int cr_map_init(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void *unused)
 {
-	return make_dev_p(MAKEDEV_CHECKNAME | MAKEDEV_WAITOK,
-		&params->cdev_device, &cr_cdev_fops, 0,
-		UID_ROOT, GID_WHEEL, 0600, "clearram");
+	*pbase = malloc(count, M_CLEARRAM, M_WAITOK | M_ZERO);
+	if (!*pbase) {
+		return -ENOMEM;
+	} else {
+		return 0;
+	}
 }
+
 
 /**
  * cr_cpu_stop_all() - stop all CPUs with serialisation
@@ -129,13 +70,13 @@ int cr_init_cdev(struct clearram_exit_params *params)
 
 void cr_cpu_stop_all(void)
 {
-#ifdef SMP
+#if defined(SMP)
 	cpuset_t other_cpus;
 
 	other_cpus = all_cpus;
 	CPU_CLR(PCPU_GET(cpuid), &other_cpus);
 	stop_cpus(other_cpus);
-#endif
+#endif /* !defined(SMP) */
 }
 
 /**
@@ -152,6 +93,57 @@ void cr_exit(struct clearram_exit_params *params)
 	if (params->map) {
 		cr_free(params->map, params->map_free_fn);
 	}
+}
+
+/**
+ * cr_init_cdev() - create character device node and related structures
+ *
+ * Return: 0 on success, >0 otherwise
+ */
+
+int cr_init_cdev(struct clearram_exit_params *params)
+{
+	return make_dev_p(MAKEDEV_CHECKNAME | MAKEDEV_WAITOK,
+		&params->cdev_device, &cr_cdev_fops, 0,
+		UID_ROOT, GID_WHEEL, 0600, "clearram");
+}
+
+/**
+ * cr_pmem_walk_combine() - walk physical memory, combining sections
+ * @params:		current walk parameters
+ * @psection_base:	pointer to base address of next section found
+ * @psection_limit:	pointer to limit address of next section found
+ *
+ * Return next range of continguous physical RAM on the system.
+ * The walk parameters establish the context of the iteration and must
+ * be initialised prior to each walk.
+ *
+ * Return: 0 if no physical memory sections remain, 1 otherwise
+ */
+
+int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, uintptr_t *psection_limit)
+{
+	if (params->restart) {
+		params->nid = 0;
+	}
+	if (phys_avail[params->nid + 1]) {
+		*psection_base = phys_avail[params->nid];
+		*psection_limit = phys_avail[params->nid + 1];
+		return params->nid += 2, 1;
+	} else {
+		return params->restart = 1, 0;
+	}
+}
+
+/**
+ * cr_virt_to_phys() - translate virtual address to physical address (PFN) using host page tables
+ *
+ * Return: Physical address (PFN) mapped by virtual address
+ */
+
+uintptr_t cr_virt_to_phys(uintptr_t va)
+{
+	return vtophys(va);
 }
 
 /*

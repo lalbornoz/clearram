@@ -1,0 +1,10 @@
+.if ${DEBUG} == 0
+CFLAGS=			-std=gnu99 -Wall
+.else
+CFLAGS=			-std=gnu99 -Wall -g3 -O0 -DDEBUG
+.endif
+KMOD=			clearram
+MAKEOBJDIRPREFIX=	${.CURDIR}/build-FreeBSD
+SRCS=			subr_clear.c subr_map.c subr_rtl.c subr_FreeBSD.c clearram.c
+
+.include <bsd.kmod.mk>
