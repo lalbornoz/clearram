@@ -50,6 +50,7 @@
 #include "mapdef.h"
 #include "rtldef.h"
 #include "osdef.h"
+#include "debugdef.h"
 #endif /* !__LP64__ || PAGE_SIZE != 4096 */
 
 /* 
