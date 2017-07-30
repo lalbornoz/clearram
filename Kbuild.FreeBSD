@@ -1,0 +1,9 @@
+.ifdef DEBUG
+CFLAGS=			-std=gnu99 -Wall -g3 -O0 -DDEBUG
+.else
+CFLAGS=			-std=gnu99 -Wall
+.endif
+KMOD=			clearram
+SRCS=			subr_clear.c subr_debug.c subr_map.c subr_rtl.c subr_FreeBSD.c clearram.c
+
+.include <bsd.kmod.mk>
