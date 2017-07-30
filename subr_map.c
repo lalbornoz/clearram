@@ -184,7 +184,7 @@ int cr_map_pages_direct(struct cmp_params *params, uintptr_t *va_base, uintptr_t
 
 	CR_ASSERT_NOTNULL(params);
 	CR_ASSERT_NOTNULL(va_base);
-	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4, level);
+	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4 + 1, level);
 	pt_cur[4] = pt_root;
 	for (level_cur = level, level_delta = 1;
 			level_cur >= CMP_LVL_PT;
@@ -214,8 +214,8 @@ int cr_map_pages_direct(struct cmp_params *params, uintptr_t *va_base, uintptr_t
 				if (++pt_idx >= 512) {
 					break;
 				}
-				CR_ASSERT_CHKRNGE(pfn_base, pfn_limit, page_size);
-				CR_ASSERT_CHKRNGE(*va_base, -1, page_size * PAGE_SIZE);
+				CR_ASSERT_TRYADD(pfn_cur, pfn_limit, page_size);
+				CR_ASSERT_TRYADD(*va_base, -1, page_size * PAGE_SIZE);
 			}
 			if (pfn_cur < pfn_limit) {
 				level_delta = -1;
@@ -227,56 +227,61 @@ int cr_map_pages_direct(struct cmp_params *params, uintptr_t *va_base, uintptr_t
 	return 0;
 }
 
-static int cmpa_first_unmapped_block(uintptr_t *ppfn_block_base, uintptr_t pfn_limit, int level, size_t page_size)
+static int cmpa_first_unmapped_block(uintptr_t *ppfn_block_base, uintptr_t pfn_limit, int level, size_t block_size)
 {
 	uintptr_t pfn_block_cur;
 
 	CR_ASSERT_NOTNULL(ppfn_block_base);
 	CR_ASSERT(pfn_limit > *ppfn_block_base);
 	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4, level);
-	CR_ASSERT_CHKRNGE(CMP_PS_4K, CMP_PS_1G + 1, page_size);
+	CR_ASSERT_CHKRNGE(CMP_PS_4K, CMP_PS_1G + 1, block_size);
 	if (level == CMP_LVL_PDP) {
 		return 0;
 	} else
 	for (pfn_block_cur = *ppfn_block_base;
 			pfn_block_cur < pfn_limit;
-			pfn_block_cur += page_size) {
-		if (((pfn_block_cur & (page_size - 1)) == 0)
-		&&  ((pfn_limit - pfn_block_cur) >= page_size)) {
-			CR_ASSERT_CHKRNGE(pfn_block_cur, pfn_limit, page_size);
+			pfn_block_cur += block_size) {
+		if (((pfn_block_cur & (block_size - 1)) == 0)
+		&&  ((pfn_limit - pfn_block_cur) >= block_size)) {
+			CR_ASSERT_TRYADD(pfn_block_cur, pfn_limit, block_size);
 			continue;
 		} else {
 			*ppfn_block_base = pfn_block_cur;
 			return 0;
 		}
-		CR_ASSERT_TRYADD(pfn_block_cur, pfn_limit, page_size);
+		CR_ASSERT_TRYADD(pfn_block_cur, pfn_limit, block_size);
 	}
 	return -ENOENT;
 }
 
-static int cmpa_align_pfn_range(uintptr_t *ppfn_block_base, uintptr_t *ppfn_block_limit, int level, size_t page_size)
+static int cmpa_align_pfn_range(uintptr_t *ppfn_block_base, uintptr_t *ppfn_block_limit, int level, size_t block_size)
 {
-	uintptr_t pfn_block_offset, pfn_block_offset_delta;
+	uintptr_t pfn_block_offset, pfn_block_offset_delta, pfn_block_limit;
 
 	CR_ASSERT_NOTNULL(ppfn_block_base);
 	CR_ASSERT_NOTNULL(ppfn_block_limit);
 	CR_ASSERT(*ppfn_block_limit > *ppfn_block_base);
 	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4, level);
-	CR_ASSERT_CHKRNGE(CMP_PS_4K, CMP_PS_1G + 1, page_size);
-	pfn_block_offset = *ppfn_block_base & (page_size - 1);
+	CR_ASSERT_CHKRNGE(CMP_PS_4K, CMP_PS_1G + 1, block_size);
+	pfn_block_offset = *ppfn_block_base & (block_size - 1);
 	if (pfn_block_offset == 0) {
-		*ppfn_block_limit = CR_DIV_ROUND_DOWN_ULL(*ppfn_block_limit, page_size);
+		pfn_block_limit = CR_DIV_ROUND_DOWN_ULL(*ppfn_block_limit, block_size);
+		if (pfn_block_limit == *ppfn_block_base) {
+			return -ENOMEM;
+		} else {
+			*ppfn_block_limit = pfn_block_limit;
+		}
 	} else
 	if (level == CMP_LVL_PT) {
 		*ppfn_block_limit = *ppfn_block_base +
 			min(*ppfn_block_limit - *ppfn_block_base,
 				(512 - (*ppfn_block_base % 512)));
 	} else {
-		pfn_block_offset_delta = page_size - pfn_block_offset;
+		pfn_block_offset_delta = block_size - pfn_block_offset;
 		if ((*ppfn_block_limit - *ppfn_block_base) >= pfn_block_offset_delta) {
 			CR_ASSERT_TRYADD(*ppfn_block_base, -1, pfn_block_offset_delta);
 			*ppfn_block_base += pfn_block_offset_delta;
-			*ppfn_block_limit = CR_DIV_ROUND_DOWN_ULL(*ppfn_block_limit, page_size);
+			*ppfn_block_limit = CR_DIV_ROUND_DOWN_ULL(*ppfn_block_limit, block_size);
 		} else {
 			return -ENOMEM;
 		}
@@ -318,7 +323,7 @@ int cr_map_pages_auto(struct cmp_params *params, uintptr_t *va_base, uintptr_t p
 
 	CR_ASSERT_NOTNULL(params);
 	CR_ASSERT_NOTNULL(va_base);
-	CR_ASSERT(pfn_base > pfn_limit);
+	CR_ASSERT(pfn_limit > pfn_base);
 	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4, level);
 	CR_ASSERT((level >= CMP_LVL_PT) && (level < CMP_LVL_PML4), ("%s: level=%d", func, level));
 	page_size = cr_cpuid_page_size_from_level(level);
@@ -331,7 +336,11 @@ int cr_map_pages_auto(struct cmp_params *params, uintptr_t *va_base, uintptr_t p
 		case CMP_LVL_PD: block_size = CMP_PS_1G; break;
 		case CMP_LVL_PDP: block_size = CMP_PS_1G; break;
 		}
-		CR_ASSERT_ISALIGN(*va_base, (block_size * PAGE_SIZE));
+#if defined(DEBUG)
+		if (level > 1) {
+			CR_ASSERT_ISALIGN(*va_base, (block_size * PAGE_SIZE));
+		}
+#endif /* defined(DEBUG) */
 		CR_ASSERT_ISALIGN(*va_base, (CMP_PS_4K * PAGE_SIZE));
 		if (cmpa_align_pfn_range(&pfn_block_base,
 				&pfn_block_limit, level, block_size) == -ENOMEM) {
