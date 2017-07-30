@@ -267,6 +267,7 @@ out:	if (cpw_params.filter) {
 	if (cmp_params.map_phys.map_base) {
 		cr_free(cmp_params.map_phys.map_base, NULL);
 	}
+	CR_PRINTK("finished, err=%d", err);
 	return err;
 
 fail:	if (cmp_params.map_base) {

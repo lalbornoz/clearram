@@ -83,7 +83,7 @@ struct csc_params {
 				CR_ASSERT(((uintptr_t)(limit) >= (uintptr_t)(base)) && ((uintptr_t)(limit) - (uintptr_t)(base)) >= (uintptr_t)(offset))
 #define CR_ASSERT_TRYSUB(base, cur, delta)\
 				CR_ASSERT(((uintptr_t)(cur) >= (uintptr_t)(base)) && ((uintptr_t)(cur) - (uintptr_t)(base)) >= (uintptr_t)(delta))
-#define CR_PRINTK(x, ...)	printk(KERN_INFO (x), ##__VA_ARGS__)
+#define CR_PRINTK(x, ...)	printk(KERN_INFO "%s: "x"\n", __func__, ##__VA_ARGS__)
 #elif defined(__FreeBSD__)
 #define CR_ASSERT(x, y)		KASSERT((x), (y))
 #define CR_ASSERT_CHKRNGE(base, limit, cur)\
@@ -92,14 +92,14 @@ struct csc_params {
 #define CR_ASSERT_ISALIGN(base, block_size)\
 				CR_ASSERT((block_size) && !((uintptr_t)(base) & ((block_size) - 1)),\
 					("%s: base=%p, block_size=%p", (uintptr_t)(base), (uintptr_t)(block_size)))
-#define CR_ASSERT_NOTNULL(x)	CR_ASSERT((x), ("%s: !"#(x), func, (x)))
+#define CR_ASSERT_NOTNULL(x)	CR_ASSERT((x), ("%s: !"#x, func, (x)))
 #define CR_ASSERT_TRYADD(base, limit, offset)\
 				CR_ASSERT(((uintptr_t)(limit) >= (uintptr_t)(base)) && ((uintptr_t)(limit) - (uintptr_t)(base)) >= (uintptr_t)(offset),\
 					("%s: base=%p - limit=%p < offset=%p", func, (uintptr_t)(base), (uintptr_t)(limit), (uintptr_t)(offset)
 #define CR_ASSERT_TRYSUB(base, cur, delta)\
 				CR_ASSERT(((uintptr_t)(cur) >= (uintptr_t)(base)) && ((uintptr_t)(cur) - (uintptr_t)(base)) >= (uintptr_t)(delta),\
 					("%s: cur=%p - base=%p < delta=%p", func, (uintptr_t)(cur), (uintptr_t)(base), (uintptr_t)(delta)
-#define CR_PRINTK(x, ...)	printf((x), ##__VA_ARGS__)
+#define CR_PRINTK(x, ...)	printf("%s: "x"\n", __func__, ##__VA_ARGS__)
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
 
 #if defined(__linux__)
