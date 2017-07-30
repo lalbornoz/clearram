@@ -236,6 +236,8 @@ int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, ui
 			*psection_base = params->res_cur->start >> 12;
 			*psection_limit = (params->res_cur->end + 1) >> 12;
 			err = 1;
+			CR_PRINTK("found RAM section 0x%013lx..0x%013lx\n",
+				*psection_base, *psection_limit);
 		}
 	}
 	return err;
