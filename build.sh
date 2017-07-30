@@ -84,6 +84,7 @@ if [ ${RFLAG:-0} -eq 1 ]; then
 			-ex	"lx-symbols"								\
 			-ex	"break ${DARG}"								\
 			-ex	"continue"								\
+			-ex	"layout src"								\
 			; ;;
 		FreeBSD)
 			echo not supported; exit 1;
