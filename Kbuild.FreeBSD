@@ -7,3 +7,4 @@ KMOD=			clearram
 SRCS=			subr_clear.c subr_debug.c subr_map.c subr_rtl.c subr_FreeBSD.c clearram.c
 
 .include <bsd.kmod.mk>
+# vim:filetype=make
