@@ -122,9 +122,9 @@ int cr_map_pages_from_va(struct cmp_params *params, uintptr_t va_src, uintptr_t 
 	for (size_t npage = 0; npage < npages; npage++, va_src += PAGE_SIZE) {
 		pfn_block_base = cr_virt_to_phys(va_src);
 		CR_ASSERT_TRYADD(pfn_block_base, (uintptr_t)-1, 1);
-		err = cr_map_pages_auto(params, &va_cur, pfn_block_base,
+		err = cr_map_pages_direct(params, &va_cur, pfn_block_base,
 				pfn_block_base + 1, extra_bits, pages_nx,
-				CMP_LVL_PT);
+				CMP_LVL_PML4, CMP_PS_4K, params->pml4);
 		if (err != 0) {
 			return err;
 		}
