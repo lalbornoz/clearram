@@ -42,6 +42,7 @@ int __attribute__((noreturn)) cr_cdev_write(struct cdev *dev __unused, struct ui
 
 void cr_free(void *p, void *unused)
 {
+	CR_ASSERT_NOTNULL(p);
 	free(p, M_CLEARRAM);
 }
 
@@ -53,12 +54,20 @@ void cr_free(void *p, void *unused)
 
 int cr_map_init(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void *unused)
 {
+	CR_ASSERT_NOTNULL(pbase);
+	CR_ASSERT_NOTNULL(count);
 	*pbase = malloc(count, M_CLEARRAM, M_WAITOK | M_ZERO);
 	if (!*pbase) {
 		return -ENOMEM;
-	} else {
-		return 0;
 	}
+	if (pcur) {
+		*pcur = *pbase;
+	}
+	if (plimit) {
+		CR_ASSERT_TRYADD(*pbase, (uintptr_t)-1, count);
+		*plimit = (uintptr_t)*pbase + count;
+	}
+	return 0;
 }
 
 
@@ -87,6 +96,9 @@ void cr_cpu_stop_all(void)
 
 void cr_exit(struct clearram_exit_params *params)
 {
+	if (!params) {
+		return;
+	}
 	if (params->cdev_device) {
 		destroy_dev(params->cdev_device);
 	}
@@ -103,6 +115,7 @@ void cr_exit(struct clearram_exit_params *params)
 
 int cr_init_cdev(struct clearram_exit_params *params)
 {
+	CR_ASSERT_NOTNULL(params);
 	return make_dev_p(MAKEDEV_CHECKNAME | MAKEDEV_WAITOK,
 		&params->cdev_device, &cr_cdev_fops, 0,
 		UID_ROOT, GID_WHEEL, 0600, "clearram");
@@ -123,12 +136,18 @@ int cr_init_cdev(struct clearram_exit_params *params)
 
 int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, uintptr_t *psection_limit)
 {
+	CR_ASSERT_NOTNULL(params);
+	CR_ASSERT_NOTNULL(psection_base);
+	CR_ASSERT_NOTNULL(psection_limit);
+	CR_ASSERT_NOTNULL(phys_avail);
 	if (params->restart) {
 		params->nid = 0;
 	}
+	CR_ASSERT_TRYADD(params->nid, INT_MAX, 1);
 	if (phys_avail[params->nid + 1]) {
 		*psection_base = phys_avail[params->nid];
 		*psection_limit = phys_avail[params->nid + 1];
+		CR_ASSERT_TRYADD(params->nid, INT_MAX, 2);
 		return params->nid += 2, 1;
 	} else {
 		return params->restart = 1, 0;

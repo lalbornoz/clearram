@@ -22,20 +22,30 @@
 /**
  * cr_clear() - setup CPU(s) and zero-fill RAM
  *
- * Disable preemption on the current CPU and stop all other CPUs, if
- * any, which may block briefly. Setup CR3 with our PML4, flush the TLB,
- * and zero-fill physical memory using REP STOSQ. As the code pages are
- * mapped at the top of VA, this will eventually cause a trigger fault
- * whilst still zero-filling as much as possible.
+ * Disable preemption on the current CPU and stop all other
+ * CPUs, if any, which may block briefly. Setup CR3 with our
+ * PML4, flush the TLB, and zero-fill physical memory using
+ * REP STOSQ. As the code pages are mapped at the top of VA,
+ * this will eventually cause a trigger fault whilst still
+ * zero-filling as much as possible.
  *
- * If built w/ -DDEBUG, %rsp and the IDTR are initialised with cr_debug_stack
- * and debug_idtr, respectively, the framebuffer offset if reset to 0 to
- * permit text output, and zero-filling is split up into blocks of 256 MB.
- * After each successful 256 MB block zero-fill, a light green-on-black
- * single period is printed to the framebuffer. As exceptions will be
- * handled by subr_debug.c, control is handed off there implicitly once
- * an exception is generated as part of the otherwise iinfinite) zero-
- * filling loop.
+ * The caller _must_ ensure that cr_pml4 points to a valid
+ * hierarchy of page tables, mapping cr_clear_limit - cr_clear
+ * and physical RAM.
+ *
+ * If built w/ -DDEBUG, %rsp and the IDTR are initialised with
+ * cr_debug_stack and debug_idtr, respectively, the framebuffer
+ * offset if reset to 0 to permit text output, and zero-filling
+ * is split up into blocks of 256 MB. After each successful 256
+ * MB block zero-fill, a light green-on-black single period is
+ * printed to the framebuffer. As exceptions will be handled by
+ * subr_debug.c, control is handed off there implicitly once an
+ * exception is generated as part of the (otherwise infinite)
+ * zero-filling loop.
+ *
+ * The caller _must_ ensure that cr_debug_{idt,stack,va} point
+ * to a valid IDT, stack page, and cr_debug_limit - cr_debug,
+ * respectively.
  *
  * Return: Nothing
  */
@@ -50,6 +60,7 @@ void __attribute__((aligned(PAGE_SIZE))) cr_clear(void)
 	cr_cpu_stop_all();
 	CR_INIT_CR3(&cr3, cr_virt_to_phys((uintptr_t)cr_pml4), CR3_BIT_WRITE_THROUGH);
 #if defined(DEBUG)
+	CR_ASSERT_TRYADD((uintptr_t)cr_debug_idt, (uintptr_t)-1, PAGE_SIZE);
 	CR_INIT_IDTR(&debug_idtr, cr_debug_idt + PAGE_SIZE, cr_debug_idt);
 #endif /* defined(DEBUG) */
 	__asm volatile(
