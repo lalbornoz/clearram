@@ -180,12 +180,12 @@ int cr_map_pages_direct(struct cmp_params *params, uintptr_t *va_base, uintptr_t
 {
 	int err, level_cur, level_delta, map_direct;
 	uintptr_t pt_idx, pfn_cur;
-	struct page_ent *pt_cur[4], *pt_next;
+	struct page_ent *pt_cur[CMP_LVL_PML4 + 1], *pt_next;
 
 	CR_ASSERT_NOTNULL(params);
 	CR_ASSERT_NOTNULL(va_base);
 	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4 + 1, level);
-	pt_cur[4] = pt_root;
+	pt_cur[CMP_LVL_PML4] = pt_root;
 	for (level_cur = level, level_delta = 1;
 			level_cur >= CMP_LVL_PT;
 			level_cur -= level_delta, level_delta = 1) {
@@ -349,7 +349,9 @@ int cr_map_pages_auto(struct cmp_params *params, uintptr_t *va_base, uintptr_t p
 		if ((err = cmpa_first_unmapped_block(&pfn_block_base,
 				pfn_block_limit, level, block_size)) == -ENOENT) {
 			continue;
-		} else
+		}
+		CR_PRINTK("mapping 0x%016lx to 0x%013lx..0x%013lx (extra_bits=0x%04x, pages_nx=%u, page_size=%lu)",
+			*va_base, pfn_block_base, pfn_block_limit, extra_bits, pages_nx, page_size);
 		if ((err = cr_map_pages_direct(params, va_base, pfn_block_base,
 				pfn_block_limit, extra_bits, pages_nx,
 				CMP_LVL_PML4, page_size, params->pml4)) == 0) {
