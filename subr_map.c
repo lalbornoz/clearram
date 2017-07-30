@@ -52,12 +52,14 @@ int cr_map_phys_to_virt_set(struct cr_map_phys *map_phys, uintptr_t pfn, uintptr
 	unsigned long pfn_hash;
 	struct cr_map_phys_node *new, *node;
 
+	CR_ASSERT_NOTNULL(map_phys);
 	pfn_hash = cmptv_hash_pfn(pfn) & (CR_MAP_PHYS_TBL_BITS - 1);
 	for (node = map_phys->tbl[pfn_hash]; node && node->next; node = node->next) {
 		if (!node->next) {
 			break;
 		}
 	}
+	CR_ASSERT_TRYADD((uintptr_t)map_phys->map_cur, (uintptr_t)-1, 1);
 	if (((uintptr_t)map_phys->map_cur + 1) >= map_phys->map_limit) {
 		return -ENOMEM;
 	} else {
@@ -84,6 +86,9 @@ int cr_map_phys_to_virt_get(struct cr_map_phys *map_phys, uintptr_t pfn, uintptr
 	unsigned long pfn_hash;
 	struct cr_map_phys_node *node;
 
+	CR_ASSERT_NOTNULL(map_phys);
+	CR_ASSERT_NOTNULL(pva);
+	CR_ASSERT_NOTNULL(CR_MAP_PHYS_TBL_BITS);
 	pfn_hash = cmptv_hash_pfn(pfn) & (CR_MAP_PHYS_TBL_BITS - 1);
 	for (node = map_phys->tbl[pfn_hash]; node; node = node->next) {
 		if (node->pfn == pfn) {
@@ -99,11 +104,18 @@ static int cmpd_link_table(struct cmp_params *params, enum pe_bits extra_bits, i
 	struct page_ent *pt_next;
 	uintptr_t pt_next_pfn, pt_next_va;
 
+	CR_ASSERT_NOTNULL(params);
+	CR_ASSERT_NOTNULL(params->map_base);
+	CR_ASSERT_NOTNULL(params->map_limit);
+	CR_ASSERT_CHKRNGE(params->map_base, params->map_limit, params->map_cur);
+	CR_ASSERT_NOTNULL(pe);
+	CR_ASSERT_NOTNULL(ppt_next);
 	if (!(pe->bits & PE_BIT_PRESENT)) {
 		if (params->map_cur >= params->map_limit) {
 			return -ENOMEM;
 		} else {
 			pt_next = (struct page_ent *)params->map_cur;
+			CR_ASSERT_TRYADD((uintptr_t)params->map_cur, params->map_limit, PAGE_SIZE);
 			params->map_cur += PAGE_SIZE;
 		}
 		pt_next_pfn = cr_virt_to_phys((uintptr_t)pt_next);
@@ -170,13 +182,10 @@ int cr_map_pages_direct(struct cmp_params *params, uintptr_t *va_base, uintptr_t
 	uintptr_t pt_idx, pfn_cur;
 	struct page_ent *pt_cur[4], *pt_next;
 
-	if ((level < CMP_LVL_PT)
-	||  (level > CMP_LVL_PML4)) {
-		return -EINVAL;
-	} else {
-		pt_cur[4] = pt_root;
-		pt_cur[3] = pt_cur[2] = pt_cur[1] = NULL;
-	}
+	CR_ASSERT_NOTNULL(params);
+	CR_ASSERT_NOTNULL(va_base);
+	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4, level);
+	pt_cur[4] = pt_root;
 	for (level_cur = level, level_delta = 1;
 			level_cur >= CMP_LVL_PT;
 			level_cur -= level_delta, level_delta = 1) {
@@ -205,6 +214,8 @@ int cr_map_pages_direct(struct cmp_params *params, uintptr_t *va_base, uintptr_t
 				if (++pt_idx >= 512) {
 					break;
 				}
+				CR_ASSERT_CHKRNGE(pfn_base, pfn_limit, page_size);
+				CR_ASSERT_CHKRNGE(*va_base, -1, page_size * PAGE_SIZE);
 			}
 			if (pfn_cur < pfn_limit) {
 				level_delta = -1;
@@ -220,6 +231,10 @@ static int cmpa_first_unmapped_block(uintptr_t *ppfn_block_base, uintptr_t pfn_l
 {
 	uintptr_t pfn_block_cur;
 
+	CR_ASSERT_NOTNULL(ppfn_block_base);
+	CR_ASSERT(pfn_limit > *ppfn_block_base);
+	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4, level);
+	CR_ASSERT_CHKRNGE(CMP_PS_4K, CMP_PS_1G + 1, page_size);
 	if (level == CMP_LVL_PDP) {
 		return 0;
 	} else
@@ -228,11 +243,13 @@ static int cmpa_first_unmapped_block(uintptr_t *ppfn_block_base, uintptr_t pfn_l
 			pfn_block_cur += page_size) {
 		if (((pfn_block_cur & (page_size - 1)) == 0)
 		&&  ((pfn_limit - pfn_block_cur) >= page_size)) {
+			CR_ASSERT_CHKRNGE(pfn_block_cur, pfn_limit, page_size);
 			continue;
 		} else {
 			*ppfn_block_base = pfn_block_cur;
 			return 0;
 		}
+		CR_ASSERT_TRYADD(pfn_block_cur, pfn_limit, page_size);
 	}
 	return -ENOENT;
 }
@@ -241,6 +258,11 @@ static int cmpa_align_pfn_range(uintptr_t *ppfn_block_base, uintptr_t *ppfn_bloc
 {
 	uintptr_t pfn_block_offset, pfn_block_offset_delta;
 
+	CR_ASSERT_NOTNULL(ppfn_block_base);
+	CR_ASSERT_NOTNULL(ppfn_block_limit);
+	CR_ASSERT(*ppfn_block_limit > *ppfn_block_base);
+	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4, level);
+	CR_ASSERT_CHKRNGE(CMP_PS_4K, CMP_PS_1G + 1, page_size);
 	pfn_block_offset = *ppfn_block_base & (page_size - 1);
 	if (pfn_block_offset == 0) {
 		*ppfn_block_limit = CR_DIV_ROUND_DOWN_ULL(*ppfn_block_limit, page_size);
@@ -252,6 +274,7 @@ static int cmpa_align_pfn_range(uintptr_t *ppfn_block_base, uintptr_t *ppfn_bloc
 	} else {
 		pfn_block_offset_delta = page_size - pfn_block_offset;
 		if ((*ppfn_block_limit - *ppfn_block_base) >= pfn_block_offset_delta) {
+			CR_ASSERT_TRYADD(*ppfn_block_base, -1, pfn_block_offset_delta);
 			*ppfn_block_base += pfn_block_offset_delta;
 			*ppfn_block_limit = CR_DIV_ROUND_DOWN_ULL(*ppfn_block_limit, page_size);
 		} else {
@@ -293,12 +316,13 @@ int cr_map_pages_auto(struct cmp_params *params, uintptr_t *va_base, uintptr_t p
 	uintptr_t pfn_block_base, pfn_block_limit;
 	size_t page_size, block_size;
 
-	if ((level < CMP_LVL_PT)
-	||  (level > CMP_LVL_PDP)) {
-		return -EINVAL;
-	} else {
-		page_size = cr_cpuid_page_size_from_level(level);
-	}
+	CR_ASSERT_NOTNULL(params);
+	CR_ASSERT_NOTNULL(va_base);
+	CR_ASSERT(pfn_base > pfn_limit);
+	CR_ASSERT_CHKRNGE(CMP_LVL_PT, CMP_LVL_PML4, level);
+	CR_ASSERT((level >= CMP_LVL_PT) && (level < CMP_LVL_PML4), ("%s: level=%d", func, level));
+	page_size = cr_cpuid_page_size_from_level(level);
+	CR_ASSERT_CHKRNGE(CMP_PS_4K, CMP_PS_1G + 1, page_size);
 	for (pfn_block_base = pfn_base, pfn_block_limit = pfn_limit;
 			pfn_block_base < pfn_limit;
 			pfn_block_base = pfn_block_limit, pfn_block_limit = pfn_limit) {
@@ -307,10 +331,8 @@ int cr_map_pages_auto(struct cmp_params *params, uintptr_t *va_base, uintptr_t p
 		case CMP_LVL_PD: block_size = CMP_PS_1G; break;
 		case CMP_LVL_PDP: block_size = CMP_PS_1G; break;
 		}
-		if ((*va_base & ((block_size * PAGE_SIZE) - 1))
-		||  (*va_base & ((PAGE_SIZE) - 1))) {
-			return -EINVAL;
-		} else
+		CR_ASSERT_ISALIGN(*va_base, (block_size * PAGE_SIZE));
+		CR_ASSERT_ISALIGN(*va_base, (CMP_PS_4K * PAGE_SIZE));
 		if (cmpa_align_pfn_range(&pfn_block_base,
 				&pfn_block_limit, level, block_size) == -ENOMEM) {
 			continue;

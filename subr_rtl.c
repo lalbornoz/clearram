@@ -63,6 +63,8 @@ int cr_init_pfns_compare(const void *lhs, const void *rhs)
 {
 	uintptr_t lhs_pfn, rhs_pfn;
 
+	CR_ASSERT_NOTNULL(lhs);
+	CR_ASSERT_NOTNULL(rhs);
 	lhs_pfn = *(const uintptr_t *)lhs;
 	rhs_pfn = *(const uintptr_t *)rhs;
 	if (lhs_pfn < rhs_pfn) {
@@ -86,6 +88,7 @@ void cr_map_init_page_ent(struct page_ent *pe, uintptr_t pfn_base, enum pe_bits 
 	struct page_ent_1G *pe_1G;
 	struct page_ent_2M *pe_2M;
 
+	CR_ASSERT_NOTNULL(pe);
 	memset(pe, 0, sizeof(*pe));
 	pe->bits = PE_BIT_PRESENT | PE_BIT_CACHE_DISABLE | extra_bits;
 	pe->nx = pages_nx;
@@ -112,9 +115,13 @@ int cr_map_pages_from_va(struct cmp_params *params, uintptr_t va_src, uintptr_t 
 	uintptr_t pfn_block_base, va_cur;
 	int err;
 
+	CR_ASSERT_NOTNULL(params);
+	CR_ASSERT_TRYADD(va_src, (uintptr_t)-1, npages * PAGE_SIZE);
+	CR_ASSERT_TRYADD(va_dst, (uintptr_t)-1, npages * PAGE_SIZE);
 	va_cur = va_dst;
 	for (size_t npage = 0; npage < npages; npage++, va_src += PAGE_SIZE) {
 		pfn_block_base = cr_virt_to_phys(va_src);
+		CR_ASSERT_TRYADD(pfn_block_base, (uintptr_t)-1, 1);
 		err = cr_map_pages_auto(params, &va_cur, pfn_block_base,
 				pfn_block_base + 1, extra_bits, pages_nx,
 				CMP_LVL_PT);
@@ -135,6 +142,10 @@ int cr_pmem_walk_filter(struct cpw_params *params, uintptr_t *ppfn_base, uintptr
 {
 	int err;
 
+	CR_ASSERT_NOTNULL(params);
+	CR_ASSERT_NOTNULL(params->filter);
+	CR_ASSERT_NOTNULL(ppfn_base);
+	CR_ASSERT_NOTNULL(ppfn_limit);
 	if (!params->filter_last_base
 	&&  !params->filter_last_limit) {
 		if ((err = cr_pmem_walk_combine(params, &params->filter_last_base,
@@ -143,18 +154,22 @@ int cr_pmem_walk_filter(struct cpw_params *params, uintptr_t *ppfn_base, uintptr
 		}
 		params->filter_ncur = 0;
 	}
+	CR_ASSERT_TRYADD(params->filter_nmax, (uintptr_t)-1, 1);
 	for (; params->filter_ncur < (params->filter_nmax + 1); params->filter_ncur++) {
 		if ((params->filter[params->filter_ncur] <  params->filter_last_base)
 		||  (params->filter[params->filter_ncur] >= params->filter_last_limit)) {
+			CR_ASSERT_TRYADD(params->filter_ncur, (uintptr_t)-1, 1);
 			continue;
 		} else
 		if (params->filter[params->filter_ncur] == params->filter_last_base) {
+			CR_ASSERT_TRYADD(params->filter_ncur, (uintptr_t)-1, 1);
 			params->filter_last_base = params->filter[params->filter_ncur] + 1;
 			continue;
 		} else {	
 			*ppfn_base = params->filter_last_base;
 			*ppfn_limit = params->filter[params->filter_ncur];
 			params->filter_last_base = params->filter[params->filter_ncur] + 1;
+			CR_ASSERT_TRYADD(params->filter_ncur, (uintptr_t)-1, 1);
 			params->filter_ncur++;
 			return 1;
 		}
@@ -191,6 +206,13 @@ int cr_debug_init(struct cmp_params *cmp_params, struct page_ent *pml4, uintptr_
 	struct idt_ent *idt;
 	uintptr_t pfn, va_this, va_mapped;
 
+	CR_ASSERT_NOTNULL(cmp_params);
+	CR_ASSERT_NOTNULL(cmp_params->map_base);
+	CR_ASSERT_NOTNULL(cmp_params->map_limit);
+	CR_ASSERT_CHKRNGE(cmp_params->map_base, cmp_params->map_limit, cmp_params->map_cur);
+	CR_ASSERT_NOTNULL(pml4);
+	CR_ASSERT((va_idt & va_stack & va_vga), ("%s: va_idt=%p, va_stack=%p, va_vga=%p", va_idt, va_stack, va_vga));
+
 	/*
 	 * Map and initialise IDT at va_idt
 	 */
@@ -200,6 +222,8 @@ int cr_debug_init(struct cmp_params *cmp_params, struct page_ent *pml4, uintptr_
 		va_this = cmp_params->map_cur;
 		va_mapped = va_idt;
 		pfn = cr_virt_to_phys(va_this);
+		CR_ASSERT_TRYADD(pfn, (uintptr_t)-1, 1);
+		CR_ASSERT_TRYADD((uintptr_t)cmp_params->map_cur, cmp_params->map_limit, PAGE_SIZE);
 		cmp_params->map_cur += PAGE_SIZE;
 		if ((err = cr_map_pages_direct(cmp_params, &va_mapped,
 				pfn, pfn + 1, 0, CMP_BIT_NX_DISABLE,
@@ -222,6 +246,8 @@ int cr_debug_init(struct cmp_params *cmp_params, struct page_ent *pml4, uintptr_
 	} else {
 		va_mapped = va_stack;
 		pfn = cr_virt_to_phys(cmp_params->map_cur);
+		CR_ASSERT_TRYADD(pfn, (uintptr_t)-1, 1);
+		CR_ASSERT_TRYADD((uintptr_t)cmp_params->map_cur, cmp_params->map_limit, PAGE_SIZE);
 		cmp_params->map_cur += PAGE_SIZE;
 		if ((err = cr_map_pages_direct(cmp_params, &va_mapped,
 				pfn, pfn + 1, 0, CMP_BIT_NX_DISABLE,
@@ -234,6 +260,7 @@ int cr_debug_init(struct cmp_params *cmp_params, struct page_ent *pml4, uintptr_
 	 */
 	va_mapped = va_vga;
 	pfn = 0xb8;
+	CR_ASSERT_TRYADD(pfn, (uintptr_t)-1, 8);
 	if ((err = cr_map_pages_direct(cmp_params, &va_mapped,
 			pfn, pfn + 8, 0, CMP_BIT_NX_DISABLE,
 			CMP_LVL_PML4, CMP_PS_4K, pml4)) != 0) {

@@ -49,6 +49,7 @@ void cr_cpu_stop_one(void *info)
 	__asm volatile(
 		"\t	cli\n");
 	params = info;
+	CR_ASSERT_NOTNULL(params);
 	spin_lock(&params->lock);
 	params->ncpus_stopped++;
 	spin_unlock(&params->lock);
@@ -66,6 +67,7 @@ void cr_cpu_stop_one(void *info)
 
 void cr_free(void *p, void (*pfree)(const void *))
 {
+	CR_ASSERT_NOTNULL(p);
 	if (pfree) {
 		pfree(p);
 	} else {
@@ -81,15 +83,19 @@ void cr_free(void *p, void (*pfree)(const void *))
 
 int cr_map_init(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void (**pfree)(const void *))
 {
+	CR_ASSERT_NOTNULL(pbase);
+	CR_ASSERT_NOTNULL(count);
 	*pbase = kzalloc(count, GFP_KERNEL | __GFP_NOWARN);
 	if (!*pbase) {
 		if (pfree) {
 			*pfree = &vfree;
 			*pbase = vmalloc(count);
+			memset(*pbase, 0, count);
 			if (pcur) {
 				*pcur = *pbase;
 			}
 			if (plimit) {
+				CR_ASSERT_TRYADD(*pbase, (uintptr_t)-1, count);
 				*plimit = (uintptr_t)*pbase + count;
 			}
 		} else {
@@ -103,9 +109,9 @@ int cr_map_init(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void
 		*pcur = *pbase;
 	}
 	if (plimit) {
+		CR_ASSERT_TRYADD(*pbase, (uintptr_t)-1, count);
 		*plimit = (uintptr_t)*pbase + count;
 	}
-	memset(*pbase, 0, count);
 	return 0;
 }
 
@@ -122,7 +128,7 @@ void cr_cpu_stop_all(void)
 	int this_cpu;
 	struct csc_params csc_params;
 	int ncpu_this, ncpus, ncpu, ncpus_stopped;
-
+	
 	this_cpu = get_cpu();
 	spin_lock_init(&csc_params.lock);
 	csc_params.ncpus_stopped = 0;
@@ -148,6 +154,9 @@ void cr_cpu_stop_all(void)
 
 void cr_exit(struct clearram_exit_params *params)
 {
+	if (!params) {
+		return;
+	}
 	if (params->cdev_device) {
 		device_destroy(params->cdev_class, MKDEV(params->cdev_major, 0));
 	}
@@ -170,6 +179,7 @@ void cr_exit(struct clearram_exit_params *params)
 
 int cr_init_cdev(struct clearram_exit_params *params)
 {
+	CR_ASSERT_NOTNULL(params);
 	params->cdev_major = register_chrdev(0, "clearram", &cr_cdev_fops);
 	if (params->cdev_major < 0) {
 		return params->cdev_major;
@@ -208,6 +218,9 @@ int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, ui
 	int err;
 	unsigned long flags_mask;
 
+	CR_ASSERT_NOTNULL(params);
+	CR_ASSERT_NOTNULL(psection_base);
+	CR_ASSERT_NOTNULL(psection_limit);
 	if (params->restart) {
 		params->res_cur = iomem_resource.child;
 		params->restart = 0;
@@ -218,6 +231,7 @@ int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, ui
 	for (err = 0; params->res_cur && !err;
 			params->res_cur = params->res_cur->sibling) {
 		flags_mask = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
+		CR_ASSERT_TRYADD(params->res_cur->end, (uintptr_t)-1, 1);
 		if ((params->res_cur->flags & flags_mask) == flags_mask) {
 			*psection_base = params->res_cur->start >> 12;
 			*psection_limit = (params->res_cur->end + 1) >> 12;
@@ -243,12 +257,14 @@ uintptr_t cr_virt_to_phys(uintptr_t va)
 
 	pgd = pgd_offset(current->mm, va);
 	pud = pud_offset(pgd, va);
+	CR_ASSERT_NOTNULL(pud);
 	pe_val = pud_val(*pud);
 	if (pe_val & _PAGE_PSE) {
 		pfn = ((struct page_ent_1G *)&pe_val)->pfn_base;
 		return (pfn << (9 + 9)) | (CR_VA_TO_PD_IDX(va) * CMP_PS_2M) | (CR_VA_TO_PT_IDX(va));
 	} else {
 		pmd = pmd_offset(pud, va);
+		CR_ASSERT_NOTNULL(pmd);
 		pe_val = pmd_val(*pmd);
 	}
 	if (pe_val & _PAGE_PSE) {
@@ -256,6 +272,7 @@ uintptr_t cr_virt_to_phys(uintptr_t va)
 		return (pfn << 9) | (CR_VA_TO_PT_IDX(va));
 	} else {
 		pte = pte_offset_map(pmd, va);
+		CR_ASSERT_NOTNULL(pte);
 		pe_val = pte_val(*pte);
 	}
 	return ((struct page_ent *)&pe_val)->pfn_base;
