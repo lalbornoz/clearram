@@ -132,6 +132,10 @@ int clearram_init(void)
 	uintptr_t map_npages, map_npages_max;
 	uintptr_t code_base;
 	extern uintptr_t cr_clear_limit;
+#if defined(DEBUG)
+	extern uintptr_t cr_debug_low_limit;
+	uintptr_t code_debug_base;
+#endif /* defined(DEBUG) */
 	static struct cmp_params cmp_params;
 	size_t npfn;
 	uintptr_t va, pfn_block_base, pfn_block_limit;
@@ -147,6 +151,9 @@ int clearram_init(void)
 	INIT_CPW_PARAMS(&cpw_params);
 	map_npages = 0;
 	code_base = (uintptr_t)&cr_clear;
+#if defined(DEBUG)
+	code_debug_base = (uintptr_t)&cr_debug_low;
+#endif /* defined(DEBUG) */
 	while ((err = cr_pmem_walk_combine(&cpw_params, &pfn_block_base,
 			&pfn_block_limit)) == 1) {
 		map_npages += (pfn_block_limit - pfn_block_base);
@@ -155,14 +162,15 @@ int clearram_init(void)
 		goto fail;
 	}
 	map_npages_max
-		    = (CR_DIV_ROUND_UP_ULL(map_npages, (512)))				/* Page Tables */
-		    + (CR_DIV_ROUND_UP_ULL(map_npages, (512 * 512)))			/* Page Directories */
-		    + (CR_DIV_ROUND_UP_ULL(map_npages, (512 * 512 * 512)))		/* Page Directory Pointer pages */
-		    + (1)								/* Page Map Level 4 */
-		    + (((cr_clear_limit - code_base) / PAGE_SIZE) * (1 + 1 + 1))	/* {PDP,PD,PT} to map code at top of VA */
-		    + (((cr_clear_limit - code_base) / PAGE_SIZE) * (1 + 1 + 1))	/* {PDP,PD,PT} to map code at original VA */
+		    = (CR_DIV_ROUND_UP_ULL(map_npages, (512)))					/* Page Tables */
+		    + (CR_DIV_ROUND_UP_ULL(map_npages, (512 * 512)))				/* Page Directories */
+		    + (CR_DIV_ROUND_UP_ULL(map_npages, (512 * 512 * 512)))			/* Page Directory Pointer pages */
+		    + (1)									/* Page Map Level 4 */
+		    + (((cr_clear_limit - code_base) / PAGE_SIZE) * (1 + 1 + 1))		/* {PDP,PD,PT} to map code at top of VA */
+		    + (((cr_clear_limit - code_base) / PAGE_SIZE) * (1 + 1 + 1))		/* {PDP,PD,PT} to map code at original VA */
 #if defined(DEBUG)
-		    + ((1 + 1 + 8 + 1) * (1 + 1 + 1))					/* {PDP,PD,PT} to map {IDT,stack,framebuffer,exception debugging code} page(s) */
+		    + (((cr_debug_low_limit - code_debug_base) / PAGE_SIZE) * (1 + 1 + 1))	/* {PDP,PD,PT} to map exception debugging code at original VA */
+		    + ((1 + 1 + 8) * (1 + 1 + 1))						/* {PDP,PD,PT} to map {IDT,stack,framebuffer} page(s) */
 #endif /* defined(DEBUG) */
 	;
 

@@ -90,14 +90,6 @@ int cr_init_pfns_compare(const void *lhs, const void *rhs);
 void cr_map_init_page_ent(struct page_ent *pe, uintptr_t pfn_base, enum pe_bits extra_bits, int pages_nx, int level, int map_direct);
 int cr_map_pages_from_va(struct cmp_params *params, uintptr_t va_src, uintptr_t va_dst, size_t npages, enum pe_bits extra_bits, int pages_nx);
 int cr_pmem_walk_filter(struct cpw_params *params, uintptr_t *ppfn_base, uintptr_t *ppfn_limit);
-
-#ifdef DEBUG
-/*
- * Exception debugging subroutines
- */
-int cr_debug_init(struct cmp_params *cmp_params, struct page_ent *pml4, uintptr_t va_idt, uintptr_t va_stack, uintptr_t va_vga);
-void cr_debug_low(struct int_frame *frame, unsigned exc_code);
-#endif /* DEBUG */
 #endif /* !_RTLDEF_H_ */
 
 /*
