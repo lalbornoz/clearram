@@ -14,13 +14,6 @@ $ make -f Makefile.Linux [DEBUG=1]
 $ ./build.sh [-b[uild]] [-c[lean]] [-d[ebug] [`<breakpoint>`]] [-h[elp]] [-r[un]] [-v[nc]]
 
 # Caveats
-* Neither Linux nor FreeBSD implement a realloc() operation for memory returned
-by {k[mz],vm}alloc() and malloc(9), respectively, that doesn't copy the set of pages
-corresponding to the original allocation instead of merely reducing it in size.
-Therefore, memory allocated in excess of the (variable) amount required for the
-page tables is presently not released back to the OS. This consumes roughly 8 MB
-per 4 GB of RAM, regardless of the physical RAM map.
-
 * No synchronisation of cached writes to storage backends is explicitly requested
 for by the LKM prior to clearing RAM. Therefore, data loss is generally inevitable.
 This can be mitigated by ensuring that sync(1) is invoked prior to writing to
@@ -29,3 +22,12 @@ This can be mitigated by ensuring that sync(1) is invoked prior to writing to
 * The default permission bits for the character device on either platforms of 0600
 should suffice to prevent an obvious DoS attack vector and should thus normally not
 be changed.
+
+# Troubleshooting
+When built with `DEBUG' defined, the LKM will print the RAM sections encountered
+and the PFN<->VA range mappings created to the kernel ring buffer at loading time.
+Additionally, zero-filling will take place in units of 256 MB and a light green-
+on-black single period (`.') is printed to the framebuffer starting at linear offset
+zero (00) after each successful iteration. Any exceptions generated as part of the
+zero-filling loop will be caught and printed, along with a CPU state dump, to the
+framebuffer as well.

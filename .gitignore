@@ -1,4 +1,5 @@
 build-FreeBSD/
 build-Linux/
+.gdb_history
 !.gitignore
 .*.sw[op]

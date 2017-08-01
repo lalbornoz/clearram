@@ -17,10 +17,40 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
-#include "include/clearram.h"
+#include "clearram.h"
 
 /**
- * cr_cdev_write() - character device write(2) file operation subroutine
+ * cr_host_cdev_init() - create character device node and related structures
+ *
+ * Return: 0 on success, <0 otherwise
+ */
+
+int cr_host_cdev_init(struct cr_host_state *state)
+{
+	CRH_VALID_PTR(state);
+	state->host_cdev_major = register_chrdev(0, "clearram",
+		&state->host_cdev_fops);
+	if (state->host_cdev_major < 0) {
+		return state->host_cdev_major;
+	}
+	state->host_cdev_class = class_create(THIS_MODULE, "clearram");
+	if (IS_ERR(state->host_cdev_class)) {
+		unregister_chrdev(state->host_cdev_major, "clearram");
+		return PTR_ERR(state->host_cdev_class);
+	}
+	state->host_cdev_device = device_create(state->host_cdev_class,
+		NULL, MKDEV(state->host_cdev_major, 0), NULL, "clearram");
+	if (IS_ERR(state->host_cdev_device)) {
+		unregister_chrdev(state->host_cdev_major, "clearram");
+		class_destroy(state->host_cdev_class);
+		return PTR_ERR(state->host_cdev_device);
+	} else {
+		return 0;
+	}
+}
+
+/**
+ * cr_host_cdev_write() - character device write(2) file operation subroutine
  *
  * Call cr_clear() upon write(2) to the character device node, which will
  * not return.
@@ -28,114 +58,54 @@
  * Return: number of bytes written, <0 on error
  */
 
-ssize_t __attribute__((noreturn)) cr_cdev_write(struct file *file __attribute__((unused)), const char __user *buf __attribute__((unused)), size_t len, loff_t *ppos __attribute__((unused)))
+ssize_t __attribute__((noreturn)) cr_host_cdev_write(struct file *file __attribute__((unused)), const char __user *buf __attribute__((unused)), size_t len, loff_t *ppos __attribute__((unused)))
 {
-	cr_clear();
+	cr_clear_cpu_entry();
 	__builtin_unreachable();
 }
 
 #if defined(CONFIG_SMP)
 /**
- * cr_cpu_stop_one() - stop single CPU with serialisation
+ * crp_host_cpu_stop_one() - stop single CPU with serialisation
  * @info:	pointer to cr_cpu_stop_one() parameters
  *
  * Return: Nothing
  */
+static void crp_host_cpu_stop_one(void *info) {
+	struct crh_stop_cpu_params *params;
 
-void cr_cpu_stop_one(void *info)
-{
-	struct csc_params *params;
-
-	__asm volatile(
+	__asm(
 		"\t	cli\n");
 	params = info;
-	CR_ASSERT_NOTNULL(params);
 	spin_lock(&params->lock);
 	params->ncpus_stopped++;
 	spin_unlock(&params->lock);
-	__asm volatile(
+	__asm(
 		"\t1:	hlt\n"
 		"\t	jmp 1b\n");
 }
 #endif /* defined(CONFIG_SMP) */
 
 /**
- * cr_free() - free previously allocated memory
+ * cr_host_cpu_stop_all() - stop all CPUs with serialisation
  *
  * Return: Nothing
  */
 
-void cr_free(void *p, void (*pfree)(const void *))
-{
-	CR_ASSERT_NOTNULL(p);
-	if (pfree) {
-		pfree(p);
-	} else {
-		kzfree(p);
-	}
-}
-
-/**
- * cr_map_init() - allocate, zero-fill, and map memory
- *
- * Return: 0 on success, >0 otherwise
- */
-
-int cr_map_init(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void (**pfree)(const void *))
-{
-	CR_ASSERT_NOTNULL(pbase);
-	CR_ASSERT_NOTNULL(count);
-	*pbase = kzalloc(count, GFP_KERNEL | __GFP_NOWARN);
-	if (!*pbase) {
-		if (pfree) {
-			*pfree = &vfree;
-			*pbase = vmalloc(count);
-			memset(*pbase, 0, count);
-			if (pcur) {
-				*pcur = *pbase;
-			}
-			if (plimit) {
-				CR_ASSERT_TRYADD(*pbase, (uintptr_t)-1, count);
-				*plimit = (uintptr_t)*pbase + count;
-			}
-		} else {
-			return -ENOMEM;
-		}
-	} else
-	if (pfree) {
-		*pfree = &kzfree;
-	}
-	if (pcur) {
-		*pcur = *pbase;
-	}
-	if (plimit) {
-		CR_ASSERT_TRYADD(*pbase, (uintptr_t)-1, count);
-		*plimit = (uintptr_t)*pbase + count;
-	}
-	return 0;
-}
-
-
-/**
- * cr_cpu_stop_all() - stop all CPUs with serialisation
- *
- * Return: Nothing
- */
-
-void cr_cpu_stop_all(void)
+void cr_host_cpu_stop_all(void)
 {
 #if defined(CONFIG_SMP)
 	int this_cpu;
-	struct csc_params csc_params;
+	struct crh_stop_cpu_params csc_params;
 	int ncpu_this, ncpus, ncpu, ncpus_stopped;
-	
+
 	this_cpu = get_cpu();
 	spin_lock_init(&csc_params.lock);
 	csc_params.ncpus_stopped = 0;
 	for (ncpu = 0, ncpu_this = smp_processor_id(), ncpus = num_online_cpus();
 			ncpu < ncpus; ncpu++) {
 		if (ncpu != ncpu_this) {
-			smp_call_function_single(ncpu, cr_cpu_stop_one, &csc_params, 0);
+			smp_call_function_single(ncpu, crp_host_cpu_stop_one, &csc_params, 0);
 		}
 	}
 	do {
@@ -147,80 +117,78 @@ void cr_cpu_stop_all(void)
 }
 
 /**
- * cr_exit() - kernel module exit point
- * 
+ * cr_host_lkm_exit() - kernel module exit point
+ *
  * Return: Nothing
  */
 
-void cr_exit(struct clearram_exit_params *params)
+void cr_host_lkm_exit(void)
 {
-	if (!params) {
-		return;
+	if (cr_host_state.host_cdev_device) {
+		device_destroy(cr_host_state.host_cdev_class,
+			MKDEV(cr_host_state.host_cdev_major, 0));
 	}
-	if (params->cdev_device) {
-		device_destroy(params->cdev_class, MKDEV(params->cdev_major, 0));
+	if (cr_host_state.host_cdev_class) {
+		class_destroy(cr_host_state.host_cdev_class);
 	}
-	if (params->cdev_class) {
-		class_destroy(params->cdev_class);
+	if (cr_host_state.host_cdev_major) {
+		unregister_chrdev(cr_host_state.host_cdev_major, "clearram");
 	}
-	if (params->cdev_major) {
-		unregister_chrdev(params->cdev_major, "clearram");
-	}
-	if (params->map) {
-		cr_free(params->map, params->map_free_fn);
-	}
+	cr_amd64_map_free(cr_host_state.clear_pml4, cr_host_vmfree);
 }
 
 /**
- * cr_init_cdev() - create character device node and related structures
+ * cr_host_vmalloc() - allocate memory items from kernel heap
  *
- * Return: 0 on success, >0 otherwise
+ * Return: >0 on success, 0 otherwise
  */
 
-int cr_init_cdev(struct clearram_exit_params *params)
+uintptr_t cr_host_vmalloc(size_t nitems, size_t size)
 {
-	CR_ASSERT_NOTNULL(params);
-	params->cdev_major = register_chrdev(0, "clearram", &cr_cdev_fops);
-	if (params->cdev_major < 0) {
-		return params->cdev_major;
+	uintptr_t p;
+
+	CRH_VALID_PTR(nitems);
+	CRH_VALID_PTR(size);
+	p = (uintptr_t)vmalloc(nitems * size);
+	if (p) {
+		memset((void *)p, 0, nitems * size);
 	}
-	params->cdev_class = class_create(THIS_MODULE, "clearram");
-	if (IS_ERR(params->cdev_class)) {
-		unregister_chrdev(params->cdev_major, "clearram");
-		return PTR_ERR(params->cdev_class);
-	}
-	params->cdev_device = device_create(params->cdev_class,
-		NULL, MKDEV(params->cdev_major, 0), NULL, "clearram");
-	if (IS_ERR(params->cdev_device)) {
-		unregister_chrdev(params->cdev_major, "clearram");
-		class_destroy(params->cdev_class);
-		return PTR_ERR(params->cdev_device);
-	} else {
-		return 0;
-	}
+	return p;
 }
 
 /**
- * cr_pmem_walk_combine() - walk physical memory, combining sections
+ * cr_host_vmfree() - release memory items from kernel heap
+ *
+ * Return: >0 on success, 0 otherwise
+ */
+
+void cr_host_vmfree(void *p)
+{
+	vfree(p);
+}
+
+/**
+ * cr_host_pmap_walk() - walk physical memory
  * @params:		current walk parameters
  * @psection_base:	pointer to base address of next section found
  * @psection_limit:	pointer to limit address of next section found
+ * @psection_cur:	optional pointer to current address of section
  *
- * Return next range of continguous physical RAM on the system.
+ * Return next range of continguous physical RAM on the system
  * The walk parameters establish the context of the iteration and must
  * be initialised prior to each walk.
  *
  * Return: 0 if no physical memory sections remain, 1 otherwise
  */
 
-int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, uintptr_t *psection_limit)
+int cr_host_pmap_walk(struct crh_pmap_walk_params *params, uintptr_t *psection_base, uintptr_t *psection_limit, uintptr_t *psection_cur)
 {
 	int err;
 	unsigned long flags_mask;
 
-	CR_ASSERT_NOTNULL(params);
-	CR_ASSERT_NOTNULL(psection_base);
-	CR_ASSERT_NOTNULL(psection_limit);
+	CRH_VALID_PTR(params);
+	CRH_VALID_PTR(psection_base);
+	CRH_VALID_PTR(psection_limit);
 	if (params->restart) {
 		params->res_cur = iomem_resource.child;
 		params->restart = 0;
@@ -231,12 +199,15 @@ int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, ui
 	for (err = 0; params->res_cur && !err;
 			params->res_cur = params->res_cur->sibling) {
 		flags_mask = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
-		CR_ASSERT_TRYADD(params->res_cur->end, (uintptr_t)-1, 1);
 		if ((params->res_cur->flags & flags_mask) == flags_mask) {
 			*psection_base = params->res_cur->start >> 12;
 			*psection_limit = (params->res_cur->end + 1) >> 12;
+			CRH_ASSERT(*psection_limit > *psection_base, "");
 			err = 1;
-			CR_PRINTK("found RAM section 0x%013lx..0x%013lx\n",
+			if (psection_cur) {
+				*psection_cur = *psection_base;
+			}
+			CRH_PRINTK_INFO("found RAM section 0x%013lx..0x%013lx\n",
 				*psection_base, *psection_limit);
 		}
 	}
@@ -244,12 +215,12 @@ int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, ui
 }
 
 /**
- * cr_virt_to_phys() - translate virtual address to physical address (PFN) using host page tables
+ * cr_host_virt_to_phys() - translate virtual address to physical address (PFN) using host page tables
  *
  * Return: Physical address (PFN) mapped by virtual address
  */
 
-uintptr_t cr_virt_to_phys(uintptr_t va)
+uintptr_t cr_host_virt_to_phys(uintptr_t va)
 {
 	pgd_t *pgd;
 	pud_t *pud;
@@ -259,25 +230,25 @@ uintptr_t cr_virt_to_phys(uintptr_t va)
 
 	pgd = pgd_offset(current->mm, va);
 	pud = pud_offset(pgd, va);
-	CR_ASSERT_NOTNULL(pud);
+	CRH_VALID_PTR(pud);
 	pe_val = pud_val(*pud);
 	if (pe_val & _PAGE_PSE) {
-		pfn = ((struct page_ent_1G *)&pe_val)->pfn_base;
-		return (pfn << (9 + 9)) | (CR_VA_TO_PD_IDX(va) * CMP_PS_2M) | (CR_VA_TO_PT_IDX(va));
+		pfn = ((struct cra_page_ent_1G *)&pe_val)->pfn_base;
+		return (pfn << (9 + 9)) | (CRA_VA_TO_PD_IDX(va) * CRA_PS_2M) | (CRA_VA_TO_PT_IDX(va));
 	} else {
 		pmd = pmd_offset(pud, va);
-		CR_ASSERT_NOTNULL(pmd);
+		CRH_VALID_PTR(pmd);
 		pe_val = pmd_val(*pmd);
 	}
 	if (pe_val & _PAGE_PSE) {
-		pfn = ((struct page_ent_2M *)&pe_val)->pfn_base;
-		return (pfn << 9) | (CR_VA_TO_PT_IDX(va));
+		pfn = ((struct cra_page_ent_2M *)&pe_val)->pfn_base;
+		return (pfn << 9) | (CRA_VA_TO_PT_IDX(va));
 	} else {
 		pte = pte_offset_map(pmd, va);
-		CR_ASSERT_NOTNULL(pte);
+		CRH_VALID_PTR(pte);
 		pe_val = pte_val(*pte);
 	}
-	return ((struct page_ent *)&pe_val)->pfn_base;
+	return ((struct cra_page_ent *)&pe_val)->pfn_base;
 }
 
 /*
