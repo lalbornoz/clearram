@@ -17,10 +17,24 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
-#include "include/clearram.h"
+#include "clearram.h"
 
 /**
- * cr_cdev_write() - character device write(2) file operation subroutine
+ * cr_host_cdev_init() - create character device node and related structures
+ *
+ * Return: 0 on success, <0 otherwise
+ */
+
+int cr_host_cdev_init(struct cr_host_state *state)
+{
+	CRH_VALID_PTR(params);
+	return make_dev_p(MAKEDEV_CHECKNAME | MAKEDEV_WAITOK,
+		&state->cdev_device, &cr_cdev_fops, 0,
+		UID_ROOT, GID_WHEEL, 0600, "clearram");
+}
+
+/**
+ * cr_host_cdev_write() - character device write(2) file operation subroutine
  *
  * Call cr_clear() upon write(2) to the character device node, which will
  * not return.
@@ -28,56 +42,19 @@
  * Return: number of bytes written, <0 on error
  */
 
-int __attribute__((noreturn)) cr_cdev_write(struct cdev *dev __unused, struct uio *uio __unused, int ioflag __unused)
+int __attribute__((noreturn)) cr_host_cdev_write(struct cdev *dev __unused, struct uio *uio __unused, int ioflag __unused)
 {
-	cr_clear();
+	cr_clear_clear();
 	__builtin_unreachable();
 }
 
 /**
- * cr_free() - free previously allocated memory
+ * cr_host_cpu_stop_all() - stop all CPUs with serialisation
  *
  * Return: Nothing
  */
 
-void cr_free(void *p, void *unused)
-{
-	CR_ASSERT_NOTNULL(p);
-	free(p, M_CLEARRAM);
-}
-
-/**
- * cr_map_init() - allocate, zero-fill, and map memory
- *
- * Return: 0 on success, >0 otherwise
- */
-
-int cr_map_init(void **pbase, void **pcur, uintptr_t *plimit, size_t count, void *unused)
-{
-	CR_ASSERT_NOTNULL(pbase);
-	CR_ASSERT_NOTNULL(count);
-	*pbase = malloc(count, M_CLEARRAM, M_WAITOK | M_ZERO);
-	if (!*pbase) {
-		return -ENOMEM;
-	}
-	if (pcur) {
-		*pcur = *pbase;
-	}
-	if (plimit) {
-		CR_ASSERT_TRYADD(*pbase, (uintptr_t)-1, count);
-		*plimit = (uintptr_t)*pbase + count;
-	}
-	return 0;
-}
-
-
-/**
- * cr_cpu_stop_all() - stop all CPUs with serialisation
- *
- * Return: Nothing
- */
-
-void cr_cpu_stop_all(void)
+void cr_host_cpu_stop_all(void)
 {
 #if defined(SMP)
 	cpuset_t other_cpus;
@@ -89,65 +66,75 @@ void cr_cpu_stop_all(void)
 }
 
 /**
- * cr_exit() - OS-dependent kernel module exit point
- * 
+ * cr_host_lkm_exit() - OS-dependent kernel module exit point
+ *
  * Return: Nothing
  */
 
-void cr_exit(struct clearram_exit_params *params)
+void cr_host_lkm_exit(struct cr_host_state *state)
 {
-	if (!params) {
-		return;
-	}
-	if (params->cdev_device) {
-		destroy_dev(params->cdev_device);
-	}
-	if (params->map) {
-		cr_free(params->map, params->map_free_fn);
+	CRH_VALID_PTR(state);
+	if (state->host_cdev_device) {
+		destroy_dev(params->host_cdev_device);
 	}
 }
 
 /**
- * cr_init_cdev() - create character device node and related structures
+ * cr_host_vmalloc() - allocate memory items from kernel heap
  *
- * Return: 0 on success, >0 otherwise
+ * Return: >0 on success, 0 otherwise
  */
 
-int cr_init_cdev(struct clearram_exit_params *params)
+uintptr_t cr_host_vmalloc(size_t nitems, size_t size)
 {
-	CR_ASSERT_NOTNULL(params);
-	return make_dev_p(MAKEDEV_CHECKNAME | MAKEDEV_WAITOK,
-		&params->cdev_device, &cr_cdev_fops, 0,
-		UID_ROOT, GID_WHEEL, 0600, "clearram");
+	uintptr_t p;
+
+	CRH_VALID_PTR(nitems);
+	CRH_VALID_PTR(size);
+	p = (uintptr_t)malloc(nitems * size, M_CLEARRAM, M_ZERO | M_WAITOK);
+	return p;
 }
 
 /**
- * cr_pmem_walk_combine() - walk physical memory, combining sections
+ * cr_host_vmfree() - release memory items from kernel heap
+ *
+ * Return: >0 on success, 0 otherwise
+ */
+
+void cr_host_vmfree(void *p)
+{
+	free(p, M_CLEARRAM);
+}
+
+/**
+ * cr_host_pmap_walk() - walk physical memory
  * @params:		current walk parameters
  * @psection_base:	pointer to base address of next section found
  * @psection_limit:	pointer to limit address of next section found
+ * @psection_cur:	optional pointer to current address of section
  *
- * Return next range of continguous physical RAM on the system.
+ * Return next range of continguous physical RAM on the system
  * The walk parameters establish the context of the iteration and must
  * be initialised prior to each walk.
  *
  * Return: 0 if no physical memory sections remain, 1 otherwise
  */
 
-int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, uintptr_t *psection_limit)
+int cr_host_pmap_walk(struct crp_walk_params *params, uintptr_t *psection_base, uintptr_t *psection_limit, uintptr_t *psection_cur)
 {
-	CR_ASSERT_NOTNULL(params);
-	CR_ASSERT_NOTNULL(psection_base);
-	CR_ASSERT_NOTNULL(psection_limit);
-	CR_ASSERT_NOTNULL(phys_avail);
+	CRH_VALID_PTR(params);
+	CRH_VALID_PTR(psection_base);
+	CRH_VALID_PTR(psection_limit);
+	CRH_VALID_PTR(phys_avail);
 	if (params->restart) {
 		params->nid = 0;
 	}
-	CR_ASSERT_TRYADD(params->nid, INT_MAX, 1);
 	if (phys_avail[params->nid + 1]) {
 		*psection_base = phys_avail[params->nid];
 		*psection_limit = phys_avail[params->nid + 1];
-		CR_ASSERT_TRYADD(params->nid, INT_MAX, 2);
+		if (psection_cur) {
+			*psection_cur = *psection_base;
+		}
 		return params->nid += 2, 1;
 	} else {
 		return params->restart = 1, 0;
@@ -155,12 +142,12 @@ int cr_pmem_walk_combine(struct cpw_params *params, uintptr_t *psection_base, ui
 }
 
 /**
- * cr_virt_to_phys() - translate virtual address to physical address (PFN) using host page tables
+ * cr_host_virt_to_phys() - translate virtual address to physical address (PFN) using host page tables
  *
  * Return: Physical address (PFN) mapped by virtual address
  */
 
-uintptr_t cr_virt_to_phys(uintptr_t va)
+uintptr_t cr_host_virt_to_phys(uintptr_t va)
 {
 	return vtophys(va);
 }

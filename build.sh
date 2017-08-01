@@ -19,14 +19,15 @@
 #
 
 set -o errexit;
-help() { echo "${0} -b[uild] -c[lean] [-d[ebug] [<breakpoint>]] -h[elp] -r[un] -v[nc]"; exit 1; };
-unset BFLAG CFLAG DFLAG RFLAG VFLAG QEMU_ARGS_EXTRA QEMU_PID VNC_PID;
+help() { echo "${0} [-a <qemu args>] [-b[uild]] [-c[lean]] [-d[ebug][ <breakpoint>]] -h[elp] [-r[un]] -v[nc]"; exit 1; };
+unset BFLAG CFLAG DFLAG DARG RFLAG VFLAG QEMU_ARGS_EXTRA QEMU_PID VNC_PID;
 UNAME_SYS="$(uname -s)";
 if [ ${#} -eq 0 ]; then
 	help;
 fi;
 while [ ${#} -gt 0 ]; do
 case "${1}" in
+-a*) QEMU_ARGS_EXTRA="${2}"; shift; ;;
 -b*) BFLAG=1; ;;
 -c*) CFLAG=1; ;;
 -d*) DFLAG=1; [ -n "${2##-*}" ] && { DARG="${2}"; shift; }; ;;
@@ -51,7 +52,7 @@ if [ ${RFLAG:-0} -eq 1 ]; then
 		-initrd		rootfs.cpio								\
 		-kernel		bzImage									\
 		-object		memory-backend-file,id=mem,size=4096M,mem-path=/dev/hugepages,share=on	\
-		";
+		${QEMU_ARGS_EXTRA}";
 		;;
 	FreeBSD)
 		echo not supported; exit 1;
@@ -74,6 +75,7 @@ if [ ${RFLAG:-0} -eq 1 ]; then
 	fi;
 	set +o errexit;
 	if [ ${DFLAG:-0} -eq 1 ]; then
+		sleep 1; echo 3 seconds..;
 		sleep 1; echo 2 seconds..;
 		sleep 1; echo 1 second...;
 		case "${UNAME_SYS}" in
@@ -91,10 +93,12 @@ if [ ${RFLAG:-0} -eq 1 ]; then
 			;;
 		esac;
 	fi;
-	if [ ${VFLAG:-0} -eq 1 ]; then
-		wait ${VNC_PID};
-	elif [ ${DFLAG:-0} -eq 0 ]; then
-		wait ${QEMU_PID};
+	if [ ${DFLAG:-0} -eq 0 ]; then
+		if [ ${VFLAG:-0} -eq 1 ]; then
+			wait ${VNC_PID};
+		else
+			wait ${QEMU_PID};
+		fi;
 	fi;
 fi;
 for KILL_PID in ${QEMU_PID} ${VNC_PID}; do
