@@ -98,7 +98,7 @@ __asm(
 	"\tmovq		%cr0,	%rax\n"
 	"\tpushq	%rax\n"
 	"\tmovq		%rsp,	%rdi\n"
-	"\taddq		$0x10,	%rsp\n"
+	"\tsubq		$0x10,	%rsp\n"
 	"\tandq		$-0x10,	%rsp\n"
 	"\tcallq	cr_clear_cpu_exception\n"
 	"\t1:		hlt\n"
