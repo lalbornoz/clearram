@@ -165,7 +165,7 @@ int cr_amd64_init_idt(struct cr_host_state *state)
 	cs_sel = 0x10;
 	cr_host_state.clear_exc_handlers_base = (uintptr_t)&cr_amd64_exception_0x00;
 	for (nidte = 0; nidte <= 0x12; nidte++) {
-		cs_offset = cr_host_state.clear_exc_handlers_base + (nidte + 0x10);
+		cs_offset = cr_host_state.clear_exc_handlers_base + (nidte * 0x10);
 		CRA_INIT_IDTE(&idt[nidte],
 			cs_offset, cs_sel, 0,
 			CRA_IDTE_ATTR_TRAP_GATE	|
