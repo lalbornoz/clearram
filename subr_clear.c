@@ -64,16 +64,19 @@ static void crp_clear_halt(void) {
 
 void cr_clear_clear(void)
 {
-	uintptr_t va_cur;
+	uintptr_t va_cur, vga_footer;
 	size_t unit, nbytes;
 
 	cr_host_state.clear_va_vga_cur = (uintptr_t)cr_host_state.clear_vga;
-	for (va_cur = 0x0ULL, unit = PAGE_SIZE * CRA_PS_1G;
+	for (va_cur = 0x0ULL, unit = PAGE_SIZE * CRA_PS_2M * 128;
 			va_cur < cr_host_state.clear_va_top; va_cur += unit) {
 		nbytes = unit - (va_cur & (unit - 1));
 		if (nbytes > (cr_host_state.clear_va_top - va_cur)) {
 			nbytes = cr_host_state.clear_va_top - va_cur;
 		}
+		vga_footer = (uintptr_t)cr_host_state.clear_vga;
+		vga_footer += (2 * 80 * (25 - 1));
+		cr_clear_vga_print_hnum(&vga_footer, va_cur, 0x1f, 1);
 		crp_clear_clear_block(va_cur, nbytes);
 		cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, ".", 0x1f, 1);
 	}
@@ -89,9 +92,13 @@ void cr_clear_clear(void)
 
 int cr_clear_cpu_clear_exception(struct crc_cpu_regs *cpu_regs)
 {
-	uintptr_t rcx, rdi;
+	uintptr_t vga_cur, rcx, rdi, vga_footer;
 
-	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "!", 0x1f, 1);
+	vga_cur = cr_host_state.clear_va_vga_cur;
+	cr_clear_vga_print_cstr(&vga_cur, "!", 0x1f, 1);
+	vga_footer = (uintptr_t)cr_host_state.clear_vga;
+	vga_footer += (2 * 80 * (25 - 1));
+	cr_clear_vga_print_hnum(&vga_footer, cpu_regs->rdi, 0x1c, 1);
 	rcx = cpu_regs->rcx & -(PAGE_SIZE/8);
 	rdi = cpu_regs->rdi & -(PAGE_SIZE);
 	if (rcx > (PAGE_SIZE/8)) {
@@ -292,6 +299,41 @@ void cr_clear_vga_print_cstr(uintptr_t *pva_vga_cur, const char *str, unsigned c
 	}
 	*pva_vga_cur = (uintptr_t)p;
 }
+
+/**
+ * XXX
+ */
+
+void cr_clear_vga_print_hnum(uintptr_t *pva_vga_cur, uintptr_t u64, unsigned char attr, size_t align)
+{
+	static char buf[sizeof("0x1234567812345678") + 1];
+	static char hex_tbl[16] = {
+		'0', '1', '2', '3', '4',
+		'5', '6', '7', '8', '9',
+		'a', 'b', 'c', 'd', 'e',
+		'f',
+	};
+	unsigned char *p = (unsigned char *)*pva_vga_cur, *str = buf;
+	size_t ndigit;
+
+	buf[0] = '0'; buf[1] = 'x';
+	for (ndigit = 0; ndigit < 16; ndigit++) {
+		buf[2 + ndigit] =
+			hex_tbl[(u64 >> ((16 - ndigit - 1) * 4)) & 0xf];
+	}
+	buf[sizeof("0x1234567812345678")] = '\0';
+	while (*str) {
+		*p++ = *str++;
+		*p++ = attr;
+	}
+	if (((uintptr_t)p & 0xfff) % (align * 2)) {
+		p = (unsigned char *)(((uintptr_t)p & ~0xfff) |
+			(((uintptr_t)p & 0xfff) +
+				((align * 2) - (((uintptr_t)p & 0xfff) % (align * 2)))));
+	}
+	*pva_vga_cur = (uintptr_t)p;
+}
+
 
 /**
  * XXX

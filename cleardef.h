@@ -58,6 +58,7 @@ int cr_clear_cpu_exception(struct crc_cpu_regs *cpu_regs);
 void cr_clear_cpu_setup(void (*fn)(void));
 void cr_clear_vga_clear(void);
 void cr_clear_vga_print_cstr(uintptr_t *pva_vga_cur, const char *str, unsigned char attr, size_t align);
+void cr_clear_vga_print_hnum(uintptr_t *pva_vga_cur, uintptr_t u64, unsigned char attr, size_t align);
 void cr_clear_vga_print_reg(uintptr_t *pva_vga_cur, uintptr_t reg, unsigned char attr, size_t align);
 void cr_clear_vga_reset(void);
 #endif /* !_CLEARDEF_H_ */
