@@ -8,7 +8,7 @@ greater than or equal to zero (0.)
 # Building
 * On either Linux or FreeBSD:<br />
 $ make [DEBUG=1]
-* On Linux using old versions of GNU make lacking the `!=' shell assignment operator:<br />
+* On Linux using old versions of GNU make lacking the != shell assignment operator:<br />
 $ make -f Makefile.Linux [DEBUG=1]
 * For development purposes:<br />
 $ ./build.sh [-b[uild]] [-c[lean]] [-d[ebug] [`<breakpoint>`]] [-h[elp]] [-r[un]] [-v[nc]]
@@ -24,10 +24,9 @@ should suffice to prevent an obvious DoS attack vector and should thus normally 
 be changed.
 
 # Troubleshooting
-When built with `DEBUG' defined, the LKM will print the RAM sections encountered
-and the PFN<->VA range mappings created to the kernel ring buffer at loading time.
-Additionally, zero-filling will take place in units of 256 MB and a light green-
-on-black single period (`.') is printed to the framebuffer starting at linear offset
-zero (00) after each successful iteration. Any exceptions generated as part of the
-zero-filling loop will be caught and printed, along with a CPU state dump, to the
-framebuffer as well.
+When built with -DDEBUG, the LKM will print the RAM sections encountered and the
+PFN<->VA range mappings created to the kernel ring buffer at loading time.
+Additionally, zero-filling will take place in units of 1 GB and a light green-on-black
+single period (.) is printed to the framebuffer starting at linear offset zero (00)
+after each successful iteration. Any exceptions generated as part of the zero-filling
+loop will be caught and printed, along with a CPU state dump, to the framebuffer as well.
