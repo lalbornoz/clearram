@@ -47,8 +47,7 @@ static int crp_amd64_fill_table(uintptr_t *va_base, uintptr_t *ppfn_cur, uintptr
 			return err;
 		} else {
 			cr_amd64_init_page_ent(&pt_cur[*ppt_idx], *ppfn_cur,
-				extra_bits | (map_direct ? CRA_PE_PAGE_SIZE : 0),
-				pages_nx, level, map_direct);
+				extra_bits, pages_nx, level, map_direct);
 		}
 		*ppfn_cur += page_size;
 		*va_base = CRA_VA_INCR(*va_base, page_size * PAGE_SIZE);

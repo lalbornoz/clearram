@@ -236,10 +236,12 @@ void cr_amd64_init_page_ent(struct cra_page_ent *pe, uintptr_t pfn_base, enum cr
 	if (map_direct && (level == 3)) {
 		pe_1G = (struct cra_page_ent_1G *)pe;
 		pe_1G->pfn_base = pfn_base;
+		pe_1G->bits |= CRA_PE_PAGE_SIZE;
 	} else
 	if (map_direct && (level == 2)) {
 		pe_2M = (struct cra_page_ent_2M *)pe;
 		pe_2M->pfn_base = pfn_base;
+		pe_2M->bits |= CRA_PE_PAGE_SIZE;
 	} else {
 		pe->pfn_base = pfn_base;
 	}
