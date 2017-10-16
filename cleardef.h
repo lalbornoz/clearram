@@ -51,9 +51,10 @@ struct crc_cpu_regs {
  * XXX
  */
 void cr_clear_clear(void);
-void cr_clear_cpu_dump_regs(struct crc_cpu_regs *cpu_regs);
+int cr_clear_cpu_clear_exception(struct crc_cpu_regs *cpu_regs);
+int cr_clear_cpu_dump_regs(struct crc_cpu_regs *cpu_regs);
 void cr_clear_cpu_entry(void);
-void cr_clear_cpu_exception(struct crc_cpu_regs *cpu_regs);
+int cr_clear_cpu_exception(struct crc_cpu_regs *cpu_regs);
 void cr_clear_cpu_setup(void (*fn)(void));
 void cr_clear_vga_clear(void);
 void cr_clear_vga_print_cstr(uintptr_t *pva_vga_cur, const char *str, unsigned char attr, size_t align);

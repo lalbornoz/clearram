@@ -134,7 +134,7 @@ void cr_host_lkm_exit(void)
 	if (cr_host_state.host_cdev_major) {
 		unregister_chrdev(cr_host_state.host_cdev_major, "clearram");
 	}
-	cr_amd64_map_free(cr_host_state.clear_pml4, cr_host_vmfree);
+	cr_host_map_free(cr_host_state.clear_pml4, cr_host_vmfree);
 }
 
 /**
@@ -143,7 +143,7 @@ void cr_host_lkm_exit(void)
  * Return: >0 on success, 0 otherwise
  */
 
-uintptr_t cr_host_vmalloc(size_t nitems, size_t size)
+void *cr_host_vmalloc(size_t nitems, size_t size)
 {
 	uintptr_t p;
 
@@ -153,7 +153,7 @@ uintptr_t cr_host_vmalloc(size_t nitems, size_t size)
 	if (p) {
 		memset((void *)p, 0, nitems * size);
 	}
-	return p;
+	return (void *)p;
 }
 
 /**
@@ -207,7 +207,7 @@ int cr_host_pmap_walk(struct crh_pmap_walk_params *params, uintptr_t *psection_b
 			if (psection_cur) {
 				*psection_cur = *psection_base;
 			}
-			CRH_PRINTK_INFO("found RAM section 0x%013lx..0x%013lx\n",
+			CRH_PRINTK_DEBUG("found RAM section 0x%013lx..0x%013lx\n",
 				*psection_base, *psection_limit);
 		}
 	}
