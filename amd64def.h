@@ -176,7 +176,9 @@ struct cra_idtr_bits {
 	"\t.global	cr_amd64_exception_"#vec_hex"\n"	\
 	"\tcr_amd64_exception_"#vec_hex":\n"			\
 	"\tpushq	$"#vec_hex"\n"				\
-	"\tcallq	cr_amd64_exception\n"
+	"\tcallq	cr_amd64_exception\n"			\
+	"\taddq		$0x10,	%rsp\n"				\
+	"\tiretq\n"
 #define CRA_DECL_EXC_HANDLER_NOCODE(vec_hex)			\
 	"\n"							\
 	"\t.section	.text\n"				\
@@ -185,7 +187,9 @@ struct cra_idtr_bits {
 	"\tcr_amd64_exception_"#vec_hex":\n"			\
 	"\tpushq	$0x00\n"				\
 	"\tpushq	$"#vec_hex"\n"				\
-	"\tcallq	cr_amd64_exception\n"
+	"\tcallq	cr_amd64_exception\n"			\
+	"\taddq		$0x10,	%rsp\n"				\
+	"\tiretq\n"
 #define CRA_DEF_EXC_HANDLER(vec_hex)				\
 	void cr_amd64_exception_##vec_hex(void)
 
@@ -199,9 +203,6 @@ size_t cr_amd64_cpuid_page_size_from_level(int level);
 int cr_amd64_init_gdt(struct cr_host_state *state);
 int cr_amd64_init_idt(struct cr_host_state *state);
 void cr_amd64_init_page_ent(struct cra_page_ent *pe, uintptr_t pfn_base, enum cra_pe_bits extra_bits, int pages_nx, int level, int map_direct);
-struct crh_litem;
-int cr_amd64_map_cmp_desc(struct crh_litem *left, struct crh_litem *right);
-int cr_amd64_map_pages_aligned(struct cra_page_ent *pml4, uintptr_t *va_base, uintptr_t pfn_base, uintptr_t pfn_limit, enum cra_pe_bits extra_bits, int pages_nx, size_t page_size, struct cra_page_ent *(*alloc_pt)(int, uintptr_t), int (*xlate_pfn)(uintptr_t, uintptr_t *));
 void cr_amd64_outb(unsigned short port, unsigned char byte);
 #endif /* !_AMD64DEF_H_ */
 

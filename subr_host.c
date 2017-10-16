@@ -26,6 +26,69 @@
 /**
  * XXX
  */
+static int crp_host_map_link_page(enum crh_ptl_type type, uintptr_t pfn, uintptr_t va) {
+	int err, level;
+	uintptr_t idx;
+	struct crh_pages_tree_node **node;
+	struct crh_pages_tree_leaf **leaf;
+	struct crh_lrsvd_item *item;
+
+	for (level = 4, node = NULL, leaf = NULL; level > 0; level--) {
+		switch (level) {
+		case 4: idx = (pfn >> (9 + 9 + 9)) & 0x1ff;
+			node = &cr_host_state.host_pages_tree.u.node[idx];
+			break;
+		case 3: idx = (pfn >> (9 + 9)) & 0x1ff;
+			node = &((*node)->u.node[idx]); break;
+		case 2: idx = (pfn >> (9)) & 0x1ff;
+			node = &((*node)->u.node[idx]); break;
+		case 1: idx = (pfn) & 0x1ff;
+			leaf = &((*node)->u.leaf[idx]); break;
+		}
+		if (level > 1) {
+			if (!(*node)) {
+				if (!((*node) = cr_host_vmalloc(1, sizeof(**node)))) {
+					return -ENOMEM;
+				} else {
+					CRH_INIT_PAGES_TREE_NODE((*node));
+				}
+			}
+		} else {
+			break;
+		}
+	}
+	if (!(*leaf)) {
+		if (!((*leaf) = cr_host_malloc(
+				&cr_host_state.host_malloc_state,
+				1, sizeof(**leaf)))) {
+			return -ENOMEM;
+		}
+		CRH_INIT_PAGES_TREE_LEAF((*leaf), 0, 0, 0, 0);
+	}
+	if (type & CRH_PTL_PAGE_TABLE) {
+		(*leaf)->type |= CRH_PTL_PAGE_TABLE;
+		(*leaf)->va_pt = va;
+		if ((err = cr_host_list_append(&cr_host_state.host_lrsvd,
+				(void **)&item)) < 0) {
+			return err;
+		} else {
+			CRH_LRSVD_ITEM_INIT(item, pfn);
+		}
+	}
+	if (type & CRH_PTL_RAM_PAGE) {
+		(*leaf)->type |= CRH_PTL_RAM_PAGE;
+		(*leaf)->va_ram = va;
+	}
+	if (type & CRH_PTL_RSVD_PAGE) {
+		(*leaf)->type |= CRH_PTL_RSVD_PAGE;
+		(*leaf)->va_rsvd = va;
+	}
+	return 0;
+}
+
+/**
+ * XXX
+ */
 
 int cr_host_list_append(struct crh_list *list, void **pitem)
 {
@@ -41,7 +104,7 @@ int cr_host_list_append(struct crh_list *list, void **pitem)
 	}
 	if (!list->head
 	||  (isize_aligned > (PAGE_SIZE - list->page_off))) {
-		if (!(p = cr_host_vmalloc(1, PAGE_SIZE))) {
+		if (!(p = (uintptr_t)cr_host_vmalloc(1, PAGE_SIZE))) {
 			return -ENOMEM;
 		} else {
 			list->page_cur = p, list->page_off = 0;
@@ -84,107 +147,103 @@ void cr_host_list_free(struct crh_list *list)
 /**
  * XXX
  */
-static struct crh_litem *crp_host_list_msort_merge(struct crh_litem *left, struct crh_litem *right, int (*cmp_func)(struct crh_litem *, struct crh_litem *)) {
-	struct crh_litem *next, *head, *tail;
 
-	head = NULL;
-	while (left || right) {
-		if (!right) {
-			next = left;
-			left = left->next;
-		} else
-		if (!left) {
-			next = right;
-			right = right->next;
-		} else
-		if (cmp_func(left, right) <= 0) {
-			next = left;
-			left = left->next;
-		} else {
-			next = right;
-			right = right->next;
-		}
-		if (!head) {
-			head = next;
-		} else {
-			tail->next = next;
-		}
-		tail = next;
+int cr_host_map_alloc_pt(struct cra_page_ent *pml4, uintptr_t va, enum cra_pe_bits extra_bits, int pages_nx, int level, int map_direct, struct cra_page_ent *pe, struct cra_page_ent **ppt_next)
+{
+	int err;
+	void *pt;
+	uintptr_t pt_next_pfn;
+
+	if (!(pt = cr_host_vmalloc(1, PAGE_SIZE))) {
+		return -ENOMEM;
+	} else {
+		(*ppt_next) = (struct cra_page_ent *)pt;
+		pt_next_pfn = cr_host_virt_to_phys((uintptr_t)(*ppt_next));
+		cr_amd64_init_page_ent(pe, pt_next_pfn,
+			extra_bits, pages_nx, level, map_direct);
 	}
-	return head;
-}
-
-static int cr_host_list_msort_split(struct crh_litem **list, struct crh_litem **left, struct crh_litem **right) {
-	struct crh_litem *last, *next;
-
-	*left = *right = last = next = *list;
-	if ((*left) && (*left)->next) {
-		while (next && next->next) {
-			/* Advance right once and next twice. */
-			last = *right;
-			(*right) = (*right)->next;
-			next = next->next->next;
-		}
-		/* Split list. */
-		return last->next = NULL, 1;
+	if ((err = crp_host_map_link_page(CRH_PTL_PAGE_TABLE,
+			pt_next_pfn, (uintptr_t)pt)) < 0) {
+		return err;
 	} else {
 		return 0;
 	}
 }
 
 /**
- * XXX
+ * cr_host_map_free() - release map memory back to OS
+ *
+ * Return: Nothing
  */
 
-void cr_host_list_msort(struct crh_litem **list, int (*cmp_func)(struct crh_litem *, struct crh_litem *))
+void cr_host_map_free(struct cra_page_ent *pml4, void (*vmfree)(void *))
 {
-	struct crh_litem *left, *right;
-
-	if (cr_host_list_msort_split(list, &left, &right)) {
-		cr_host_list_msort(&left, cmp_func);
-		cr_host_list_msort(&right, cmp_func);
-		*list = crp_host_list_msort_merge(left, right, cmp_func);
-	}
+	/* XXX */
 }
 
 /**
  * XXX
  */
 
-struct cra_page_ent *cr_host_map_alloc_pt(int level, uintptr_t va)
+int cr_host_map_link_ram_page(uintptr_t pfn, uintptr_t va)
 {
-	struct cra_page_ent *p;
-	struct cra_page_tbl_desc *item;
-	
-	if (!(p = (struct cra_page_ent *)cr_host_vmalloc(1, PAGE_SIZE))) {
-		return NULL;
-	} else
-	if (cr_host_list_append(&cr_host_state.host_lpage_tbl_desc,
-				(void **)&item) < 0) {
-		return NULL;
-	} else {
-		CRA_INIT_PAGE_TBL_DESC(item, (uintptr_t)p, 0);
-		return p;
-	}
+	return crp_host_map_link_page(CRH_PTL_RAM_PAGE, pfn, va);
 }
 
 /**
  * XXX
  */
 
-int cr_host_map_xlate_pfn(uintptr_t pfn, uintptr_t *pva)
+int cr_host_map_link_rsvd_page(uintptr_t pfn, uintptr_t va)
 {
-	struct crh_litem *litem;
-	struct cra_page_tbl_desc *item;
-	for (litem = cr_host_state.host_lpage_tbl_desc.head; litem; litem = litem->next) {
-		item = (struct cra_page_tbl_desc *)&litem->item;
-		if (item->pfn == pfn) {
-			return *pva = item->va_host;
+	return crp_host_map_link_page(CRH_PTL_RSVD_PAGE, pfn, va);
+}
+
+/**
+ * XXX
+ */
+
+int cr_host_map_xlate_pfn(enum crh_ptl_type type, uintptr_t pfn, uintptr_t *pva)
+{
+	int level;
+	uintptr_t idx;
+	struct crh_pages_tree_node **node;
+	struct crh_pages_tree_leaf **leaf;
+
+	for (level = 4, node = NULL, leaf = NULL; level > 0; level--) {
+		switch (level) {
+		case 4: idx = (pfn >> (9 + 9 + 9)) & 0x1ff;
+			node = &cr_host_state.host_pages_tree.u.node[idx];
+			break;
+		case 3: idx = (pfn >> (9 + 9)) & 0x1ff;
+			node = &((*node)->u.node[idx]); break;
+		case 2: idx = (pfn >> (9)) & 0x1ff;
+			node = &((*node)->u.node[idx]); break;
+		case 1: idx = (pfn) & 0x1ff;
+			leaf = &((*node)->u.leaf[idx]); break;
+		}
+		if (level > 1) {
+			if (!(*node)) {
+				return -ESRCH;
+			}
+		} else {
+			break;
 		}
 	}
-	return -ENOENT;
+	if (!(*leaf)) {
+		return -ESRCH;
+	} else
+	switch ((*leaf)->type & type) {
+	case CRH_PTL_PAGE_TABLE:
+		return (*pva) = (*leaf)->va_pt, 0;
+	case CRH_PTL_RAM_PAGE:
+		return (*pva) = (*leaf)->va_ram, 0;
+	case CRH_PTL_RSVD_PAGE:
+		return (*pva) = (*leaf)->va_rsvd, 0;
+	default:
+		return -EINVAL;
+	}
 }
-
 
 /**
  * XXX
@@ -197,6 +256,43 @@ void cr_host_soft_assert_fail(const char *fmt, ...)
 	va_start(ap, fmt);
 	vprintk(fmt, ap);
 	va_end(ap);
+}
+
+/**
+ * XXX
+ */
+
+void *cr_host_malloc(struct crh_malloc_state *mstate, size_t nitems, size_t size)
+{
+	size_t count;
+	void *p;
+
+	if ((count = nitems * size) >= PAGE_SIZE) {
+		return NULL;
+	} else
+	if (count > mstate->rem) {
+		if (!(mstate->tail = (uintptr_t)
+				cr_host_vmalloc(1, mstate->rem = PAGE_SIZE))) {
+			return NULL;
+		}
+	}
+	p = (void *)mstate->tail;
+	if (count < mstate->rem) {
+		mstate->rem -= count;
+		mstate->tail += count;
+	} else {
+		mstate->rem = 0;
+	}
+	return p;
+}
+
+/**
+ * XXX
+ */
+
+void cr_host_mfree(struct crh_malloc_state *mstate, void *p)
+{
+	/* XXX */
 }
 
 /*

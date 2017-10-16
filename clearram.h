@@ -49,8 +49,8 @@
 struct cr_host_state;
 #include "mapdef.h"
 #include "amd64def.h"
-#include "cleardef.h"
 #include "hostdef.h"
+#include "cleardef.h"
 
 /**
  * LKM state
@@ -79,8 +79,9 @@ struct cr_host_state {
 	size_t			clear_image_npages;
 	uintptr_t		clear_va_top;
 
-	/* VA base address of reserved PFN list */
-	uintptr_t		clear_va_lrsvd;
+	/* XXX */
+	volatile int		clear_clear_flag;
+	uintptr_t		clear_va_vga_cur;
 
 #if defined(__linux__)
 	/* Character device node class, device pointer, and major number */
@@ -102,8 +103,13 @@ struct cr_host_state {
 	struct crh_pmap_walk_params
 				host_pmap_walk_params;
 
-	/* List of page table descriptors */
-	struct crh_list		host_lpage_tbl_desc;
+	/* crh_host_m{alloc,free}() state */
+	struct crh_malloc_state	host_malloc_state;
+
+	/* XXX */
+	struct crh_list		host_lrsvd;
+	struct crh_pages_tree_node
+				host_pages_tree;
 };
 extern struct cr_host_state	cr_host_state;
 #endif /* !_CLEARRAM_H_ */

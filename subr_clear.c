@@ -35,6 +35,7 @@ static void crp_clear_clear_block(uintptr_t va_base, size_t qwords) {
 	uintptr_t clear_qword;
 
 	clear_qword = 0x0ULL;
+	cr_host_state.clear_clear_flag = 1;	/* XXX not atomic */
 	__asm volatile(
 		"\tcld\n"
 		"\tmovq		%[qword],	%%rax\n"
@@ -43,16 +44,19 @@ static void crp_clear_clear_block(uintptr_t va_base, size_t qwords) {
 		"\trep		stosq\n"
 		:: [qword] "r"(clear_qword), [count] "r"(qwords), [va] "r"(va_base)
 		:  "rax", "rcx","rdi", "flags");
+	cr_host_state.clear_clear_flag = 0;	/* XXX not atomic */
 }
 
-static void crp_clear_halt(uintptr_t va_vga_cur) {
+static void crp_clear_halt(void) {
 #if defined(DEBUG)
-	cr_clear_vga_print_cstr(&va_vga_cur, "halting CPU#0.", 0x1f, 1);
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur,
+		"halting CPU#0.", 0x1f, 1);
 	__asm(
 		"\t1:	hlt\n"
 		"\t	jmp	1b\n");
 #else
-	cr_clear_vga_print_cstr(&va_vga_cur, "resetting CPU#0.", 0x1f, 1);
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur,
+		"resetting CPU#0.", 0x1f, 1);
 	__asm(
 		"\tud2\n");
 #endif /* defined(DEBUG) */
@@ -60,81 +64,98 @@ static void crp_clear_halt(uintptr_t va_vga_cur) {
 
 void cr_clear_clear(void)
 {
-	uintptr_t va_cur, va_vga_cur;
-	struct crh_litem *litem, *litem_next;
-	struct cra_page_tbl_desc *item;
+	uintptr_t va_cur;
+	size_t unit, nbytes;
 
-	va_vga_cur = (uintptr_t)cr_host_state.clear_vga;
-	va_cur = 0x0ULL;
-
-	for (litem = (struct crh_litem *)cr_host_state.clear_va_lrsvd;
-			litem; litem = litem_next) {
-		litem_next = litem->next;
-		item = (struct cra_page_tbl_desc *)&litem->item;
-		if (item->va_hi > va_cur) {
-			crp_clear_clear_block(va_cur, (item->va_hi - va_cur) / 8);
+	cr_host_state.clear_va_vga_cur = (uintptr_t)cr_host_state.clear_vga;
+	for (va_cur = 0x0ULL, unit = PAGE_SIZE * CRA_PS_1G;
+			va_cur < cr_host_state.clear_va_top; va_cur += unit) {
+		nbytes = unit - (va_cur & (unit - 1));
+		if (nbytes > (cr_host_state.clear_va_top - va_cur)) {
+			nbytes = cr_host_state.clear_va_top - va_cur;
 		}
-		va_cur = item->va_hi + 1;
-		cr_clear_vga_print_cstr(&va_vga_cur, ".", 0x1f, 1);
+		crp_clear_clear_block(va_cur, nbytes);
+		cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, ".", 0x1f, 1);
 	}
-	if (va_cur < cr_host_state.clear_va_top) {
-		crp_clear_clear_block(va_cur, (cr_host_state.clear_va_top - va_cur) / 8);
-		cr_clear_vga_print_cstr(&va_vga_cur, ".", 0x1f, 1);
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "done, ", 0x1f, 1);
+	crp_clear_halt();
+}
+
+/**
+ * cr_clear_cpu_clear_exception() - XXX
+ *
+ * Return: 0 if instruction is to be skipped, 1 if instruction is to be restarted, <0 otherwise
+ */
+
+int cr_clear_cpu_clear_exception(struct crc_cpu_regs *cpu_regs)
+{
+	uintptr_t rcx, rdi;
+
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "!", 0x1f, 1);
+	rcx = cpu_regs->rcx & -(PAGE_SIZE/8);
+	rdi = cpu_regs->rdi & -(PAGE_SIZE);
+	if (rcx > (PAGE_SIZE/8)) {
+		cpu_regs->rcx = rcx + (PAGE_SIZE/8);
+		cpu_regs->rdi = rdi + (PAGE_SIZE);
+		return 1;
+	} else {
+		return 0;
 	}
-	cr_clear_vga_print_cstr(&va_vga_cur, "done, ", 0x1f, 1);
-	/* XXX clear rsvd pages here! */
-	crp_clear_halt(va_vga_cur);
 }
 
 /**
  * cr_clear_cpu_dump_regs() - generic exception handler
  *
- * Return: Nothing
+ * Return: 0 if instruction is to be skipped, 1 if instruction is to be restarted, <0 otherwise
  */
 
-void cr_clear_cpu_dump_regs(struct crc_cpu_regs *cpu_regs)
+int cr_clear_cpu_dump_regs(struct crc_cpu_regs *cpu_regs)
 {
-	uintptr_t va_vga_cur;
 	uintptr_t *preg;
 	const char **preg_name;
 	size_t nrow, ncol;
 
 	preg = (uintptr_t *)cpu_regs;
 	preg_name = crp_clear_cpu_reg_names;
-	va_vga_cur = (uintptr_t)cr_host_state.clear_vga;
+	cr_host_state.clear_va_vga_cur = (uintptr_t)cr_host_state.clear_vga;
 	for (nrow = 0; nrow < 25; nrow++) {
 		for (ncol = 0; ncol < 80; ncol += 8) {
-			cr_clear_vga_print_cstr(&va_vga_cur, "        ", 0x1f, 8);
+			cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "        ", 0x1f, 8);
 		}
 	}
-	va_vga_cur = (uintptr_t)cr_host_state.clear_vga;
+	cr_host_state.clear_va_vga_cur = (uintptr_t)cr_host_state.clear_vga;
 	for (nrow = 0; nrow < (sizeof(*cpu_regs) / sizeof(uintptr_t));
 			nrow += 4) {
 		for (ncol = 0; ncol < 4; ncol++) {
 			if (!preg_name[nrow + ncol][0]) {
-				va_vga_cur += 20 * 2;
+				cr_host_state.clear_va_vga_cur += 20 * 2;
 			} else {
-				cr_clear_vga_print_cstr(&va_vga_cur, preg_name[nrow + ncol], 0x1f, 20);
+				cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur,
+					preg_name[nrow + ncol], 0x1f, 20);
 			}
 		}
-		if ((va_vga_cur & 0xfff) % (80 * 2)) {
-			va_vga_cur = (va_vga_cur & ~0xfff) |
-				((va_vga_cur & 0xfff) +
-					((80 * 2) - ((va_vga_cur & 0xfff) % (80 * 2))));
+		if ((cr_host_state.clear_va_vga_cur & 0xfff) % (80 * 2)) {
+			cr_host_state.clear_va_vga_cur =
+				(cr_host_state.clear_va_vga_cur & ~0xfff) |
+				((cr_host_state.clear_va_vga_cur & 0xfff) +
+					((80 * 2) - ((cr_host_state.clear_va_vga_cur & 0xfff) % (80 * 2))));
 		}
 		for (ncol = 0; ncol < 4; ncol++) {
 			if (!preg_name[nrow + ncol][0]) {
-				va_vga_cur += 20 * 2;
+				cr_host_state.clear_va_vga_cur += 20 * 2;
 			} else {
-				cr_clear_vga_print_reg(&va_vga_cur, preg[nrow + ncol], 0x1f, 20);
+				cr_clear_vga_print_reg(&cr_host_state.clear_va_vga_cur,
+					preg[nrow + ncol], 0x1f, 20);
 			}
 		}
-		if ((va_vga_cur & 0xfff) % (80 * 2)) {
-			va_vga_cur = (va_vga_cur & ~0xfff) |
-				((va_vga_cur & 0xfff) +
-					((80 * 2) - ((va_vga_cur & 0xfff) % (80 * 2))));
+		if ((cr_host_state.clear_va_vga_cur & 0xfff) % (80 * 2)) {
+			cr_host_state.clear_va_vga_cur =
+				(cr_host_state.clear_va_vga_cur & ~0xfff) |
+				((cr_host_state.clear_va_vga_cur & 0xfff) +
+					((80 * 2) - ((cr_host_state.clear_va_vga_cur & 0xfff) % (80 * 2))));
 		}
 	}
+	return -1;
 }
 
 /**
@@ -157,12 +178,22 @@ void cr_clear_cpu_entry(void)
 /**
  * cr_clear_cpu_exception() - generic exception handler
  *
- * Return: Nothing
+ * Return: 0 if instruction is to be skipped, 1 if instruction is to be restarted, <0 otherwise
  */
 
-void cr_clear_cpu_exception(struct crc_cpu_regs *cpu_regs)
+int cr_clear_cpu_exception(struct crc_cpu_regs *cpu_regs)
 {
-	cr_clear_cpu_dump_regs(cpu_regs);
+	int status;
+
+	if (cr_host_state.clear_clear_flag) {	/* XXX not atomic */
+		status = cr_clear_cpu_clear_exception(cpu_regs);
+	} else {
+		status = cr_clear_cpu_dump_regs(cpu_regs);
+	}
+	if (status == 0) {
+		cpu_regs->orig_rip += 3;	/* XXX */
+	}
+	return status;
 }
 
 /**

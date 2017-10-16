@@ -71,19 +71,6 @@ struct cra_page_ent_2M {
 } __attribute__((packed));
 
 /**
- * {PML4,PDP,PD,PT} descriptor
- */
-struct cra_page_tbl_desc {
-	uintptr_t	pfn, va_host, va_hi;
-} __attribute__((packed));
-#define CRA_INIT_PAGE_TBL_DESC(p, _va_host, _va_hi) do {	\
-		(p)->pfn = cr_host_virt_to_phys(		\
-			(uintptr_t)(_va_host));			\
-		(p)->va_host = (uintptr_t)(_va_host);		\
-		(p)->va_hi = (uintptr_t)(_va_hi);		\
-	} while (0)
-
-/**
  * PFN and VA manipulation constants
  */
 #define CRA_IDX_MASK		0x1ff
@@ -133,10 +120,10 @@ struct cra_page_tbl_desc {
 /**
  * Page mapping logic
  */
-int cr_amd64_map_pages_clone4K(struct cra_page_ent *pml4, uintptr_t va_src, uintptr_t *pva_dst, enum cra_pe_bits extra_bits, int pages_nx, size_t npages, struct cra_page_ent *(*alloc_pt)(int, uintptr_t), int (*xlate_pfn)(uintptr_t, uintptr_t *));
-int cr_amd64_map_pages_unaligned(struct cra_page_ent *pml4, uintptr_t *va_base, uintptr_t pfn_base, uintptr_t pfn_limit, enum cra_pe_bits extra_bits, int pages_nx, int level, struct cra_page_ent *(*alloc_pt)(int, uintptr_t), int (*xlate_pfn)(uintptr_t, uintptr_t *));
-void cr_amd64_map_free(struct cra_page_ent *pml4, void (*mfree)(void *));
-int cr_amd64_map_translate(struct cra_page_ent *pt, uintptr_t pfn, uintptr_t *va, int level, int (*xlate_pfn)(uintptr_t, uintptr_t *));
+enum crh_ptl_type;
+int cr_amd64_map_pages_aligned(struct cra_page_ent *pml4, uintptr_t *va_base, uintptr_t pfn_base, uintptr_t pfn_limit, enum cra_pe_bits extra_bits, int pages_nx, size_t page_size, int (*alloc_pt)(struct cra_page_ent *, uintptr_t, enum cra_pe_bits, int, int, int, struct cra_page_ent *, struct cra_page_ent **), int (*link_ram_page)(uintptr_t, uintptr_t), int (*xlate_pfn)(enum crh_ptl_type, uintptr_t, uintptr_t *));
+int cr_amd64_map_pages_clone4K(struct cra_page_ent *pml4, uintptr_t va_src, uintptr_t *pva_dst, enum cra_pe_bits extra_bits, int pages_nx, size_t npages, int (*alloc_pt)(struct cra_page_ent *, uintptr_t, enum cra_pe_bits, int, int, int, struct cra_page_ent *, struct cra_page_ent **), int (*link_ram_page)(uintptr_t, uintptr_t), int (*xlate_pfn)(enum crh_ptl_type, uintptr_t, uintptr_t *));
+int cr_amd64_map_pages_unaligned(struct cra_page_ent *pml4, uintptr_t *va_base, uintptr_t pfn_base, uintptr_t pfn_limit, enum cra_pe_bits extra_bits, int pages_nx, size_t page_size, int level, int (*alloc_pt)(struct cra_page_ent *, uintptr_t, enum cra_pe_bits, int, int, int, struct cra_page_ent *, struct cra_page_ent **), int (*link_ram_page)(uintptr_t, uintptr_t), int (*xlate_pfn)(enum crh_ptl_type, uintptr_t, uintptr_t *));
 #endif /* !_MAPDEF_H_ */
 
 /*

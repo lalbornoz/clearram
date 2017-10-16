@@ -44,6 +44,8 @@ size_t cr_amd64_cpuid_page_size_from_level(int level)
 		"\tcpuid\n"
 		:"=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(features_ext)
 		:"0"(eax));
+	features_ext &= ~CRA_CPUID_FEAT_EXT_PDPE1G;
+	features_basic &= ~CRA_CPUID_FEAT_BASIC_PSE;
 	switch (level) {
 	case 3:	if (features_ext & CRA_CPUID_FEAT_EXT_PDPE1G) {
 			return CRA_PS_1G;
@@ -98,11 +100,53 @@ __asm(
 	"\tmovq		%cr0,	%rax\n"
 	"\tpushq	%rax\n"
 	"\tmovq		%rsp,	%rdi\n"
+	"\tmovq		%rdi,	%rbx\n"
 	"\tsubq		$0x10,	%rsp\n"
 	"\tandq		$-0x10,	%rsp\n"
 	"\tcallq	cr_clear_cpu_exception\n"
-	"\t1:		hlt\n"
-	"\t		jmp	1b\n");
+	"\ttest		%rax,	%rax\n"
+	"\tjz		1f\n"
+	"\tjns		2f\n"
+	"\t3:\n"			/* unhandled exception */
+	"\t	hlt\n"
+	"\t	jmp	3b\n"
+	"\t1:\n"			/* skip instruction */
+	"\t2:\n"			/* restart instruction */
+	"\t	movq	%rbx,	%rsp\n"
+	"\t	popq	%rax\n"
+	"\t	movq	%rax,	%cr0\n"
+	"\t	popq	%rax\n"
+	"\t	movq	%rax,	%cr2\n"
+	"\t	popq	%rax\n"
+	"\t	movq	%rax,	%cr3\n"
+	"\t	popq	%rax\n"
+	"\t	movq	%rax,	%cr4\n"
+	"\t	popq	%rax\n"
+	"\t	movq	%rax,	%ds\n"
+	"\t	popq	%rax\n"
+	"\t	movq	%rax,	%es\n"
+	"\t	popq	%rax\n"
+	"\t	movq	%rax,	%fs\n"
+	"\t	popq	%rax\n"
+	"\t	movq	%rax,	%gs\n"
+	"\t	popq	%rax\n"
+	"\t	popq	%rbx\n"
+	"\t	popq	%rcx\n"
+	"\t	popq	%rdx\n"
+	"\t	popq	%rsi\n"
+	"\t	popq	%rdi\n"
+	"\t	popq	%rbp\n"
+	"\t	addq	$0x08,	%rsp\n"
+	"\t	popq	%r8\n"
+	"\t	popq	%r9\n"
+	"\t	popq	%r10\n"
+	"\t	popq	%r11\n"
+	"\t	popq	%r12\n"
+	"\t	popq	%r13\n"
+	"\t	popq	%r14\n"
+	"\t	popq	%r15\n"
+	"\t	ret\n"
+);
 
 /**
  * cr_amd64_exception{00-12}() - exception vector 0x{00-12} wrappers
@@ -199,139 +243,6 @@ void cr_amd64_init_page_ent(struct cra_page_ent *pe, uintptr_t pfn_base, enum cr
 	} else {
 		pe->pfn_base = pfn_base;
 	}
-}
-
-/**
- * XXX
- */
-
-int cr_amd64_map_cmp_desc(struct crh_litem *left, struct crh_litem *right)
-{
-	struct cra_page_tbl_desc *item_left, *item_right;
-	item_left = (struct cra_page_tbl_desc *)left->item;
-	item_right = (struct cra_page_tbl_desc *)right->item;
-	if (item_left->va_hi <= item_right->va_hi) {
-		return -1;
-	} else
-	if (item_left->va_hi > item_right->va_hi) {
-		return 1;
-	} else {
-		return -1;
-	}
-}
-
-/**
- * cr_amd64_map_pages_aligned() functions
- *
- * Return: 0 on success, <0 otherwise
- */
-static int crp_amd64_link_table(struct cra_page_ent *pml4, uintptr_t va, enum cra_pe_bits extra_bits, int pages_nx, int level, int map_direct, struct cra_page_ent *pe, struct cra_page_ent **ppt_next, struct cra_page_ent *(*alloc_pt)(int, uintptr_t)) {
-	uintptr_t pt_next_pfn;
-	if (!(*ppt_next = alloc_pt(level - 1, va))) {
-		return -ENOMEM;
-	} else {
-		pt_next_pfn = cr_host_virt_to_phys((uintptr_t)*ppt_next);
-		cr_amd64_init_page_ent(pe, pt_next_pfn,
-			extra_bits, pages_nx, level, map_direct);
-	}
-	return 0;
-}
-static int crp_amd64_get_table(struct cra_page_ent *pml4, int level, int map_direct, struct cra_page_ent *pe, struct cra_page_ent **ppt_next, int (*xlate_pfn)(uintptr_t, uintptr_t *)) {
-	uintptr_t pt_next_pfn;
-	if (map_direct && (level == CRA_LVL_PDP)) {
-		pt_next_pfn = ((struct cra_page_ent_1G *)pe)->pfn_base;
-	} else
-	if (map_direct && (level == CRA_LVL_PD)) {
-		pt_next_pfn = ((struct cra_page_ent_2M *)pe)->pfn_base;
-	} else {
-		pt_next_pfn = pe->pfn_base;
-	}
-	return xlate_pfn(pt_next_pfn, (uintptr_t *)ppt_next);
-}
-static void crp_amd64_fill_table(uintptr_t *va_base, uintptr_t *ppfn_cur, uintptr_t pfn_limit, enum cra_pe_bits extra_bits, int pages_nx, size_t page_size, int level, int map_direct, struct cra_page_ent *pt_cur, uintptr_t *ppt_idx) {
-	while (*ppfn_cur < pfn_limit) {
-		cr_amd64_init_page_ent(&pt_cur[*ppt_idx], *ppfn_cur,
-			extra_bits | (map_direct ? CRA_PE_PAGE_SIZE : 0),
-			pages_nx, level, map_direct);
-		*ppfn_cur += page_size;
-		*va_base = CRA_VA_INCR(*va_base, page_size * PAGE_SIZE);
-		if (++(*ppt_idx) >= 512) {
-			break;
-		}
-	}
-}
-
-/**
- * cr_amd64_map_pages_aligned() - create {1G,2M,4K} mappings from aligned VA to aligned PFN range in {PML4,PDP,PD,PT}
- * @params:	mapping parameters
- * @va_base:	base virtual address to map at
- * @pfn_base:	base physical address (PFN) to map
- * @pfn_limit:	physical address limit (PFN)
- * @extra_bits:	extra bits to set in {PML4,PDP,PD,PT} entry
- * @pages_nx:	NX bit to set or clear in {PML4,PDP,PD,PT} entry
- * @page_size:	one of CRA_PS_{1G,2M,4K}
- *
- * Create {1G,2M,4K} mapping(s) for each PFN within pfn_base..pfn_limit
- * starting at va_base in pt_next using the supplied extra_bits, pages_nx
- * bit, and page_size. Lower-order page tables are created on demand.
- * Newly created {PDP,PD,PT} are allocated from the map heap in units of
- * the page size (0x1000) without blocking.
- *
- * Return: 0 on success, <0 otherwise
- */
-
-int cr_amd64_map_pages_aligned(struct cra_page_ent *pml4, uintptr_t *va_base, uintptr_t pfn_base, uintptr_t pfn_limit, enum cra_pe_bits extra_bits, int pages_nx, size_t page_size, struct cra_page_ent *(*alloc_pt)(int, uintptr_t), int (*xlate_pfn)(uintptr_t, uintptr_t *))
-{
-	int err, level, level_delta, map_direct;
-	uintptr_t pt_idx, pfn_cur;
-	struct cra_page_ent *pt_cur[CRA_LVL_PML4 + 1], *pt_next;
-
-	CRH_VALID_PTR(pml4);
-	CRH_VALID_PTR(va_base);
-	CRH_VALID_BASE(pfn_base, page_size);
-	CRH_VALID_BASE(pfn_limit, page_size);
-	CRH_VALID_RANGE(CRA_PS_4K, CRA_PS_1G + 1, page_size);
-	CRH_VALID_BASE(*va_base, (page_size * PAGE_SIZE));
-	CRH_PRINTK_DEBUG("mapping 0x%016lx to 0x%013lx..0x%013lx (extra_bits=0x%04x, pages_nx=%u, page_size=%lu)",
-		*va_base, pfn_base, pfn_limit, extra_bits, pages_nx, page_size);
-	pfn_cur = pfn_base;
-	pt_cur[CRA_LVL_PML4] = pml4;
-	for (level = CRA_LVL_PML4, level_delta = 1;
-			level >= CRA_LVL_PT;
-			level -= level_delta, level_delta = 1) {
-		switch (level) {
-		case CRA_LVL_PT: map_direct = (page_size == CRA_SIZE_PTE); break;
-		case CRA_LVL_PD: map_direct = (page_size == CRA_SIZE_PDE); break;
-		case CRA_LVL_PDP: map_direct = (page_size == CRA_SIZE_PDPE); break;
-		case CRA_LVL_PML4: map_direct = (0); break;
-		}
-		pt_idx = CRA_VA_TO_PE_IDX(*va_base, level);
-		if (!map_direct) {
-			if (!(pt_cur[level][pt_idx].bits & CRA_PE_PRESENT)) {
-				err = crp_amd64_link_table(pml4, *va_base, extra_bits,
-					pages_nx, level, map_direct, &pt_cur[level][pt_idx],
-					&pt_next, alloc_pt);
-			} else {
-				err = crp_amd64_get_table(pml4, level, map_direct,
-					&pt_cur[level][pt_idx], &pt_next, xlate_pfn);
-			}
-			if (err < 0) {
-				return err;
-			} else {
-				pt_cur[level - 1] = pt_next;
-			}
-		} else {
-			crp_amd64_fill_table(va_base, &pfn_cur, pfn_limit,
-				extra_bits, pages_nx, page_size, level,
-				map_direct, pt_cur[level], &pt_idx);
-			if (pfn_cur < pfn_limit) {
-				level_delta = -1;
-			} else {
-				break;
-			}
-		}
-	}
-	return 0;
 }
 
 /**

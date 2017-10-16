@@ -83,10 +83,12 @@ int cr_host_evhand(struct module *m, int what, void *arg __unused)
 int cr_host_lkm_init(void)
 {
 	int err, level;
-	uintptr_t pfn_block_base, pfn_block_limit, va_vga, va, va_lrsvd_pages;
+	uintptr_t pfn_block_base, pfn_block_limit, va_vga, va_page, va_pt;
+	struct crh_litem *litem;
+	struct crh_lrsvd_item *item;
 	size_t npage;
-	struct cra_page_tbl_desc *item;
-	struct crh_litem *litem, *litem_next;
+	uintptr_t pt_idx, pfn;
+	struct cra_page_ent *pt;
 
 	/*
 	 * Initialise image {base address,page count} range
@@ -111,21 +113,29 @@ int cr_host_lkm_init(void)
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
 	cr_amd64_init_page_ent(&cr_host_state.clear_pml4[0x1f0],
 		cr_host_virt_to_phys((uintptr_t)cr_host_state.clear_pml4),
-		CRA_PE_READ_WRITE | CRA_PE_WRITE_THROUGH, CRA_NX_ENABLE, CRA_LVL_PML4, 0);
-	CRH_LIST_INIT(&cr_host_state.host_lpage_tbl_desc,
-		sizeof(struct cra_page_tbl_desc));
+		CRA_PE_READ_WRITE | CRA_PE_WRITE_THROUGH,
+		CRA_NX_ENABLE, CRA_LVL_PML4, 0);
 	cr_host_state.clear_va_top = 0;
-	for (err = 0, level = CRA_LVL_PDP; level >= CRA_LVL_PT; level--) {
+	va_vga = (uintptr_t)cr_host_state.clear_vga;
+	CRH_INIT_MALLOC_STATE(&cr_host_state.host_malloc_state, 0, 0);
+	CRH_INIT_PMAP_WALK_PARAMS(&cr_host_state.host_pmap_walk_params);
+	CRH_LIST_INIT(&cr_host_state.host_lrsvd, sizeof(struct crh_lrsvd_item));
+	for (level = CRA_LVL_PDP; level >= CRA_LVL_PT; level--) {
 		CRH_INIT_PMAP_WALK_PARAMS(&cr_host_state.host_pmap_walk_params);
-		while ((err == 0) && (err = cr_host_pmap_walk(
-					&cr_host_state.host_pmap_walk_params,
-					&pfn_block_base, &pfn_block_limit, NULL)) > 0) {
-			err = cr_amd64_map_pages_unaligned(cr_host_state.clear_pml4,
-				&cr_host_state.clear_va_top,
-				pfn_block_base, pfn_block_limit,
-				CRA_PE_READ_WRITE | CRA_PE_CACHE_DISABLE,
-				CRA_NX_ENABLE, level,
-				cr_host_map_alloc_pt, cr_host_map_xlate_pfn);
+		while ((err = cr_host_pmap_walk(
+				&cr_host_state.host_pmap_walk_params,
+				&pfn_block_base, &pfn_block_limit, NULL)) == 1) {
+			if ((err = cr_amd64_map_pages_unaligned(
+					cr_host_state.clear_pml4,
+					&cr_host_state.clear_va_top,
+					pfn_block_base, pfn_block_limit,
+					CRA_PE_READ_WRITE | CRA_PE_CACHE_DISABLE, CRA_NX_ENABLE,
+					CRA_PS_4K, level,
+					cr_host_map_alloc_pt,
+					cr_host_map_link_ram_page,
+					cr_host_map_xlate_pfn)) < 0) {
+				goto fail;
+			}
 		}
 		if (err < 0) {
 			goto fail;
@@ -135,50 +145,64 @@ int cr_host_lkm_init(void)
 			cr_host_state.clear_image_base, NULL,
 			CRA_PE_READ_WRITE | CRA_PE_WRITE_THROUGH, CRA_NX_DISABLE,
 			cr_host_state.clear_image_npages,
-			cr_host_map_alloc_pt, cr_host_map_xlate_pfn)) < 0) {
+			cr_host_map_alloc_pt,
+			cr_host_map_link_rsvd_page,
+			cr_host_map_xlate_pfn)) < 0) {
 		goto fail;
 	} else
-	for (npage = 0; npage < cr_host_state.clear_image_npages; npage++) {
-		va = CRA_VA_INCR(cr_host_state.clear_image_base, (npage * PAGE_SIZE));
-		if ((err = cr_host_list_append(
-				&cr_host_state.host_lpage_tbl_desc, (void **)&item)) < 0) {
-			goto fail;
-		} else {
-			CRA_INIT_PAGE_TBL_DESC(item, va, 0);
-		}
-	}
-	va_vga = (uintptr_t)cr_host_state.clear_vga;
-	if ((err = cr_amd64_map_pages_unaligned(cr_host_state.clear_pml4, &va_vga,
+	if ((err = cr_amd64_map_pages_unaligned(
+			cr_host_state.clear_pml4,
+			&va_vga,
 			CRHS_VGA_PFN_BASE, CRHS_VGA_PFN_BASE + CRHS_VGA_PAGES,
-			CRA_PE_READ_WRITE | CRA_PE_CACHE_DISABLE, CRA_NX_ENABLE, CRA_PS_4K,
-			cr_host_map_alloc_pt, cr_host_map_xlate_pfn)) < 0) {
+			CRA_PE_READ_WRITE | CRA_PE_CACHE_DISABLE, CRA_NX_ENABLE,
+			CRA_PS_4K, CRA_LVL_PT,
+			cr_host_map_alloc_pt,
+			cr_host_map_link_ram_page,
+			cr_host_map_xlate_pfn)) < 0) {
 		goto fail;
 	}
-	for (litem = cr_host_state.host_lpage_tbl_desc.head; litem; litem = litem_next) {
-		litem_next = litem->next;
-		item = (struct cra_page_tbl_desc *)&litem->item;
-		if (!litem_next
-		||  ((uintptr_t)litem & -PAGE_SIZE) !=
-				((uintptr_t)litem_next & -PAGE_SIZE)) {
-			va_lrsvd_pages = (uintptr_t)litem & -PAGE_SIZE;
-			pfn_block_base = cr_host_virt_to_phys(va_lrsvd_pages);
-			pfn_block_limit = pfn_block_limit + 1;
-			if ((err = cr_amd64_map_pages_unaligned(cr_host_state.clear_pml4,
-					&va_lrsvd_pages, pfn_block_base, pfn_block_limit,
-					CRA_PE_READ_WRITE | CRA_PE_WRITE_THROUGH, CRA_NX_ENABLE,
-					CRA_PS_4K, cr_host_map_alloc_pt, cr_host_map_xlate_pfn)) < 0) {
-				goto fail;
-			}
-		}
-		if ((err = cr_amd64_map_translate(cr_host_state.clear_pml4,
-				(uintptr_t)item->pfn, &item->va_hi, CRA_LVL_PML4,
-				cr_host_map_xlate_pfn)) < 0) {
+	for (litem = cr_host_state.host_lrsvd.head; litem; litem = litem->next) {
+		item = (struct crh_lrsvd_item *)&litem->item;
+		if ((err = cr_host_map_xlate_pfn(CRH_PTL_RAM_PAGE,
+				item->pfn, &va_page)) < 0) {
 			goto fail;
 		}
-		litem_next = litem->next;
+		for (level = CRA_LVL_PML4, pt = cr_host_state.clear_pml4;
+				level >= CRA_LVL_PT; level--) {
+			pt_idx = CRA_VA_TO_PE_IDX(va_page, level);
+			if (level > CRA_LVL_PT) {
+				if ((err = cr_host_map_xlate_pfn(CRH_PTL_PAGE_TABLE,
+						pt[pt_idx].pfn_base, &va_pt)) < 0) {
+					goto fail;
+				} else {
+					pt = (struct cra_page_ent *)va_pt;
+				}
+			} else {
+				pt[pt_idx].bits &= ~CRA_PE_PRESENT;
+			}
+		}
 	}
-	cr_host_list_msort(&cr_host_state.host_lpage_tbl_desc.head, cr_amd64_map_cmp_desc);
-	cr_host_state.clear_va_lrsvd = (uintptr_t)cr_host_state.host_lpage_tbl_desc.head;
+	for (npage = 0; npage < cr_host_state.clear_image_npages; npage++) {
+		pfn = cr_host_virt_to_phys(cr_host_state.clear_image_base + (npage * PAGE_SIZE));
+		if ((err = cr_host_map_xlate_pfn(CRH_PTL_RAM_PAGE, pfn, &va_page)) < 0) {
+			goto fail;
+		}
+		for (level = CRA_LVL_PML4, pt = cr_host_state.clear_pml4;
+				level >= CRA_LVL_PT; level--) {
+			pt_idx = CRA_VA_TO_PE_IDX(va_page, level);
+			if (level > CRA_LVL_PT) {
+				if ((err = cr_host_map_xlate_pfn(CRH_PTL_PAGE_TABLE,
+						pt[pt_idx].pfn_base, &va_pt)) < 0) {
+					goto fail;
+				} else {
+					pt = (struct cra_page_ent *)va_pt;
+				}
+			} else {
+				pt[pt_idx].bits &= ~CRA_PE_PRESENT;
+			}
+		}
+
+	}
 	if ((err = cr_amd64_init_gdt(&cr_host_state)) < 0) {
 		goto fail;
 	} else
@@ -194,7 +218,7 @@ out:	if (err < 0) {
 		CRH_PRINTK_DEBUG("finished, err=%d", err);
 	}
 	return err;
-fail:	cr_amd64_map_free(cr_host_state.clear_pml4, cr_host_vmfree);
+fail:	cr_host_map_free(cr_host_state.clear_pml4, cr_host_vmfree);
 	goto out;
 }
 
