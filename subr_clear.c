@@ -42,7 +42,7 @@ static void crp_clear_clear_block(uintptr_t va_base, size_t qwords) {
 		"\tmovq		%[count],	%%rcx\n"
 		"\tmovq		%[va],		%%rdi\n"
 		"\trep		stosq\n"
-		:: [qword] "r"(clear_qword), [count] "r"(qwords), [va] "r"(va_base)
+		:: [qword] "r"(clear_qword), [count] "r"(qwords/8), [va] "r"(va_base)
 		:  "rax", "rcx","rdi", "flags");
 	cr_host_state.clear_clear_flag = 0;	/* XXX not atomic */
 }
@@ -99,14 +99,18 @@ int cr_clear_cpu_clear_exception(struct crc_cpu_regs *cpu_regs)
 	vga_footer = (uintptr_t)cr_host_state.clear_vga;
 	vga_footer += (2 * 80 * (25 - 1));
 	cr_clear_vga_print_hnum(&vga_footer, cpu_regs->rdi, 0x1c, 1);
-	rcx = cpu_regs->rcx & -(PAGE_SIZE/8);
-	rdi = cpu_regs->rdi & -(PAGE_SIZE);
-	if (rcx > (PAGE_SIZE/8)) {
-		cpu_regs->rcx = rcx + (PAGE_SIZE/8);
-		cpu_regs->rdi = rdi + (PAGE_SIZE);
-		return 1;
-	} else {
+	if (cpu_regs->rdi >= cr_host_state.clear_va_top) {
 		return 0;
+	} else {
+		rcx = cpu_regs->rcx & -(PAGE_SIZE/8);
+		rdi = cpu_regs->rdi & -(PAGE_SIZE);
+		if (rcx > (PAGE_SIZE/8)) {
+			cpu_regs->rcx = rcx + (PAGE_SIZE/8);
+			cpu_regs->rdi = rdi + (PAGE_SIZE);
+			return 1;
+		} else {
+			return 0;
+		}
 	}
 }
 

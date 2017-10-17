@@ -80,7 +80,7 @@ static int crp_amd64_fill_table(uintptr_t *va_base, uintptr_t *ppfn_cur, uintptr
 int cr_amd64_map_pages_aligned(struct cra_page_ent *pml4, uintptr_t *va_base, uintptr_t pfn_base, uintptr_t pfn_limit, enum cra_pe_bits extra_bits, int pages_nx, size_t page_size, int (*alloc_pt)(struct cra_page_ent *, uintptr_t, enum cra_pe_bits, int, int, int, struct cra_page_ent *, struct cra_page_ent **), int (*link_ram_page)(uintptr_t, uintptr_t), int (*xlate_pfn)(enum crh_ptl_type, uintptr_t, uintptr_t *))
 {
 	int err, level, level_delta, map_direct;
-	uintptr_t pt_idx, pfn_cur;
+	uintptr_t pt_idx, pfn_cur, va_last;
 	struct cra_page_ent *pt_cur[CRA_LVL_PML4 + 1], *pt_next;
 
 	CRH_VALID_PTR(pml4);
@@ -116,16 +116,24 @@ int cr_amd64_map_pages_aligned(struct cra_page_ent *pml4, uintptr_t *va_base, ui
 			} else {
 				pt_cur[level - 1] = pt_next;
 			}
-		} else
-		if ((err = crp_amd64_fill_table(va_base, &pfn_cur, pfn_limit,
-				extra_bits, pages_nx, page_size, level,
-				map_direct, pt_cur[level], &pt_idx, link_ram_page)) < 0) {
-			return err;
 		} else {
-			if (pfn_cur < pfn_limit) {
-				level_delta = -1;
+			va_last = (*va_base);
+			if ((err = crp_amd64_fill_table(va_base, &pfn_cur, pfn_limit,
+					extra_bits, pages_nx, page_size, level,
+					map_direct, pt_cur[level], &pt_idx, link_ram_page)) < 0) {
+				return err;
 			} else {
-				break;
+				if (pfn_cur >= pfn_limit) {
+					break;
+				} else
+				if ((va_last & (0x1ff << (9 + 9 + 12))) !=
+						((*va_base) & (0x1ff << (9 + 9 + 12)))) {
+					level_delta = -3;
+				} else
+				if ((va_last & (0x1ff << (9 + 12))) !=
+						((*va_base) & (0x1ff << (9 + 12)))) {
+					level_delta = -2;
+				}
 			}
 		}
 	}
