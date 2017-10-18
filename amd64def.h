@@ -200,9 +200,11 @@ struct cra_idtr_bits {
  */
 
 size_t cr_amd64_cpuid_page_size_from_level(int level);
+unsigned char cr_amd64_inb(unsigned short port);
 int cr_amd64_init_gdt(struct cr_host_state *state);
 int cr_amd64_init_idt(struct cr_host_state *state);
 void cr_amd64_init_page_ent(struct cra_page_ent *pe, uintptr_t pfn_base, enum cra_pe_bits extra_bits, int pages_nx, int level, int map_direct);
+void cr_amd64_msleep(unsigned ns);
 void cr_amd64_outb(unsigned short port, unsigned char byte);
 #endif /* !_AMD64DEF_H_ */
 

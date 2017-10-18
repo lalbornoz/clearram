@@ -130,23 +130,6 @@ struct crh_stop_cpu_params {
 #endif /* defined(__linux__) && defined(CONFIG_SMP) */
 
 /**
- * CRH_ASSERT() - evaluate soft or hard assertion and return -EINVAL or bugcheck
- */
-#if defined(DEBUG)
-# if defined(__linux__)
-#  define CRH_ASSERT(x, ...)	BUG_ON(!(x))
-# elif defined(__FreeBSD__)	KASSERT((x), (y))
-# endif /* defined(__linux__) || defined(__FreeBSD__) */
-#else
-# define CRH_ASSERT(x, y...) do {					\
-		if (unlikely(!(x))) {					\
-			cr_host_soft_assert_fail(KERN_ERR y);		\
-			return -EINVAL;					\
-		}							\
-	} while (0)
-#endif /* defined(DEBUG) */
-
-/**
  * CRH_PRINTK_{DEBUG,ERR,INFO}() - print string to kernel ring buffer at level {DEBUG,ERR,INFO}
  */
 #if defined(__linux__)
@@ -172,31 +155,6 @@ struct crh_stop_cpu_params {
 # define CRH_PRINTK_INFO(x, ...)					\
 	printf("%s: "x"\n", __func__, ##__VA_ARGS__)
 #endif /* defined(__linux__) || defined(__FreeBSD__) */
-
-/**
- * CRH_SAFE_{ADD,SUB}() - validate and perform {addition,substraction} on ranged uintptr_t
- */
-#define CRH_SAFE_ADD(base, limit, offset) ({				\
-	CRH_ASSERT((uintptr_t)(limit) >= (uintptr_t)(base)) && (((uintptr_t)(limit) - (uintptr_t)(base)) >= (uintptr_t)(offset)),\
-		"%s: base=%p - limit=%p < offset=%p", __func__, (uintptr_t)(base), (uintptr_t)(limit), (uintptr_t)(offset))\
-			(base) += (offset); })
-#define CRH_SAFE_SUB(base, cur, delta) ({				\
-	CRH_ASSERT((uintptr_t)(cur) >= (uintptr_t)(base)) && (((uintptr_t)(cur) - (uintptr_t)(base)) >= (uintptr_t)(delta)),\
-		"%s: cur=%p - base=%p < delta=%p", __func__, (uintptr_t)(cur), (uintptr_t)(base), (uintptr_t)(delta))\
-			(base) -= (delta); })
-
-/**
- * CRH_VALID_{BASE,PTR,RANGE}() - validate base address alignment, pointer, or ranged uintptr_t
- */
-#define CRH_VALID_BASE(base, block_size)				\
-	CRH_ASSERT(block_size && !((uintptr_t)(base) & ((block_size) - 1)),\
-		"%s: base=%p, block_size=%p", (uintptr_t)(base), (uintptr_t)(block_size))
-#define CRH_VALID_PTR(x)						\
-	CRH_ASSERT((x),							\
-		"%s: !"#x, __func__, (x))
-#define CRH_VALID_RANGE(base, limit, cur)				\
-	CRH_ASSERT(((uintptr_t)(cur) >= (uintptr_t)(base)) && ((uintptr_t)(cur) < (uintptr_t)(limit)),\
-		"%s: base=%p, limit=%p, cur=%p", (uintptr_t)(base), (uintptr_t)(limit), (uintptr_t)(cur))
 
 /*
  * Host environment subroutines

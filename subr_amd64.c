@@ -108,8 +108,12 @@ __asm(
 	"\tjz		1f\n"
 	"\tjns		2f\n"
 	"\t3:\n"			/* unhandled exception */
-	"\t	hlt\n"
+#if defined(DEBUG)
+	"\t	hlt\n"			/*  DEBUG: halt */
 	"\t	jmp	3b\n"
+#else
+	"\t	ud2\n"			/* !DEBUG: triple fault */
+#endif /* defined(DEBUG) */
 	"\t1:\n"			/* skip instruction */
 	"\t2:\n"			/* restart instruction */
 	"\t	movq	%rbx,	%rsp\n"
@@ -180,6 +184,21 @@ CRA_DECL_EXC_HANDLER_NOCODE(0x12)
  * XXX
  */
 
+unsigned char cr_amd64_inb(unsigned short port)
+{
+	unsigned short byte;
+
+	__asm volatile(
+		"\tmovw		%[port],	%%dx\n"
+		"\tinb		%%dx\n"
+		:"=a"(byte) : [port] "r"(port) : "dx");
+	return byte;
+}
+
+/**
+ * XXX
+ */
+
 int cr_amd64_init_gdt(struct cr_host_state *state)
 {
 	struct cra_gdt_ent *gdt;
@@ -245,6 +264,41 @@ void cr_amd64_init_page_ent(struct cra_page_ent *pe, uintptr_t pfn_base, enum cr
 	} else {
 		pe->pfn_base = pfn_base;
 	}
+}
+
+/**
+ * XXX
+ */
+
+void cr_amd64_msleep(unsigned ms)
+{
+	unsigned long ns;
+	unsigned short lo, hi;
+	unsigned int count[2], delta, niter;
+
+	ns = ms * 1000 * 1000;
+	do {
+		cr_amd64_outb(0x43, 0x30);
+		cr_amd64_outb(0x40, 0x00);
+		cr_amd64_outb(0x40, 0x00);
+		count[0] = count[1] = 0x10000;
+		for (niter = 0; niter < 8192; niter += delta) {
+			count[0] = count[1];
+			cr_amd64_outb(0x43, 0x00);	/* Latch count value */
+			lo = cr_amd64_inb(0x40);
+			hi = cr_amd64_inb(0x40);
+			count[1] = ((hi << 8) | lo);
+			if ((delta = (count[0] - count[1]))) {
+				if (ns >= 838) {
+					ns -= 838;
+				}
+				if (ns < 838) {
+					break;
+				}
+			}
+		}
+		(void)ns;
+	} while (ns >= 838);
 }
 
 /**

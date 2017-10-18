@@ -83,12 +83,6 @@ int cr_amd64_map_pages_aligned(struct cra_page_ent *pml4, uintptr_t *va_base, ui
 	uintptr_t pt_idx, pfn_cur, va_last;
 	struct cra_page_ent *pt_cur[CRA_LVL_PML4 + 1], *pt_next;
 
-	CRH_VALID_PTR(pml4);
-	CRH_VALID_PTR(va_base);
-	CRH_VALID_BASE(pfn_base, page_size);
-	CRH_VALID_BASE(pfn_limit, page_size);
-	CRH_VALID_RANGE(CRA_PS_4K, CRA_PS_1G + 1, page_size);
-	CRH_VALID_BASE(*va_base, (page_size * PAGE_SIZE));
 	CRH_PRINTK_DEBUG("mapping 0x%016lx to 0x%013lx..0x%013lx (extra_bits=0x%04x, pages_nx=%u, page_size=%lu)",
 		*va_base, pfn_base, pfn_limit, extra_bits, pages_nx, page_size);
 	pfn_cur = pfn_base;
@@ -151,7 +145,6 @@ int cr_amd64_map_pages_clone4K(struct cra_page_ent *pml4, uintptr_t va_src, uint
 	int err;
 	uintptr_t pfn_block_base, va_cur, va_dst;
 
-	CRH_VALID_PTR(pml4);
 	if (pva_dst) {
 		va_dst = *pva_dst;
 	} else {
@@ -262,12 +255,6 @@ int cr_amd64_map_pages_unaligned(struct cra_page_ent *pml4, uintptr_t *va_base, 
 	uintptr_t pfn_block_base, pfn_block_limit, pfn_block_base_offset;
 	size_t block_size, align_size, npages;
 
-	CRH_VALID_PTR(pml4);
-	CRH_VALID_PTR(va_base);
-	CRH_ASSERT(pfn_limit > pfn_base, "%s: pfn_limit=%p, pfn_base=%p", pfn_limit, pfn_base);
-	CRH_VALID_RANGE(CRA_LVL_PT, CRA_LVL_PML4, level);
-	CRH_ASSERT((level >= CRA_LVL_PT) && (level < CRA_LVL_PML4), "%s: level=%d", __func__, level);
-	CRH_VALID_RANGE(CRA_PS_4K, CRA_PS_1G + 1, page_size);
 	for (pfn_block_base = pfn_base, pfn_block_limit = pfn_limit;
 			pfn_block_base < pfn_limit;
 			pfn_block_base = pfn_block_limit, pfn_block_limit = pfn_limit) {
