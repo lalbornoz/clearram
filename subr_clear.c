@@ -49,16 +49,27 @@ static void crp_clear_clear_block(uintptr_t va_base, size_t qwords) {
 
 static void crp_clear_halt(void) {
 #if defined(DEBUG)
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "1...", 0x1f, 1);
+	cr_amd64_msleep(1000);
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "2...", 0x1f, 1);
+	cr_amd64_msleep(1000);
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "3...", 0x1f, 1);
+	cr_amd64_msleep(1000);
 	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur,
 		"halting CPU#0.", 0x1f, 1);
 	__asm(
 		"\t1:	hlt\n"
 		"\t	jmp	1b\n");
 #else
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "1...", 0x1f, 1);
+	cr_amd64_msleep(1000);
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "2...", 0x1f, 1);
+	cr_amd64_msleep(1000);
+	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur, "3...", 0x1f, 1);
+	cr_amd64_msleep(1000);
 	cr_clear_vga_print_cstr(&cr_host_state.clear_va_vga_cur,
 		"resetting CPU#0.", 0x1f, 1);
-	__asm(
-		"\tud2\n");
+	__asm("\tud2\n");
 #endif /* defined(DEBUG) */
 }
 
@@ -201,8 +212,15 @@ int cr_clear_cpu_exception(struct crc_cpu_regs *cpu_regs)
 	} else {
 		status = cr_clear_cpu_dump_regs(cpu_regs);
 	}
-	if (status == 0) {
-		cpu_regs->orig_rip += 3;	/* XXX */
+	switch (status) {
+	case 0: cpu_regs->orig_rip += 3;	/* XXX */
+	case 1: break;
+	default:
+#if !defined(DEBUG)
+		cr_amd64_msleep(1000);
+#else
+		break;
+#endif /* !defined(DEBUG) */
 	}
 	return status;
 }

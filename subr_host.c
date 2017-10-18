@@ -96,8 +96,6 @@ int cr_host_list_append(struct crh_list *list, void **pitem)
 	uintptr_t p;
 	struct crh_litem *li, *li_last;
 
-	CRH_VALID_PTR(list);
-	CRH_VALID_PTR(list->item_size);
 	isize_aligned = sizeof(*li) + list->item_size;
 	if (isize_aligned % 8) {
 		isize_aligned &= 0xf8;

@@ -27,7 +27,6 @@
 
 int cr_host_cdev_init(struct cr_host_state *state)
 {
-	CRH_VALID_PTR(params);
 	return make_dev_p(MAKEDEV_CHECKNAME | MAKEDEV_WAITOK,
 		&state->cdev_device, &cr_cdev_fops, 0,
 		UID_ROOT, GID_WHEEL, 0600, "clearram");
@@ -73,7 +72,6 @@ void cr_host_cpu_stop_all(void)
 
 void cr_host_lkm_exit(struct cr_host_state *state)
 {
-	CRH_VALID_PTR(state);
 	if (state->host_cdev_device) {
 		destroy_dev(params->host_cdev_device);
 	}
@@ -89,8 +87,6 @@ uintptr_t cr_host_vmalloc(size_t nitems, size_t size)
 {
 	uintptr_t p;
 
-	CRH_VALID_PTR(nitems);
-	CRH_VALID_PTR(size);
 	p = (uintptr_t)malloc(nitems * size, M_CLEARRAM, M_ZERO | M_WAITOK);
 	return p;
 }
@@ -122,10 +118,6 @@ void cr_host_vmfree(void *p)
 
 int cr_host_pmap_walk(struct crp_walk_params *params, uintptr_t *psection_base, uintptr_t *psection_limit, uintptr_t *psection_cur)
 {
-	CRH_VALID_PTR(params);
-	CRH_VALID_PTR(psection_base);
-	CRH_VALID_PTR(psection_limit);
-	CRH_VALID_PTR(phys_avail);
 	if (params->restart) {
 		params->nid = 0;
 	}

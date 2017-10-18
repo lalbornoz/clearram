@@ -27,7 +27,6 @@
 
 int cr_host_cdev_init(struct cr_host_state *state)
 {
-	CRH_VALID_PTR(state);
 	state->host_cdev_major = register_chrdev(0, "clearram",
 		&state->host_cdev_fops);
 	if (state->host_cdev_major < 0) {
@@ -147,8 +146,6 @@ void *cr_host_vmalloc(size_t nitems, size_t size)
 {
 	uintptr_t p;
 
-	CRH_VALID_PTR(nitems);
-	CRH_VALID_PTR(size);
 	p = (uintptr_t)vmalloc(nitems * size);
 	if (p) {
 		memset((void *)p, 0, nitems * size);
@@ -186,9 +183,6 @@ int cr_host_pmap_walk(struct crh_pmap_walk_params *params, uintptr_t *psection_b
 	int err;
 	unsigned long flags_mask;
 
-	CRH_VALID_PTR(params);
-	CRH_VALID_PTR(psection_base);
-	CRH_VALID_PTR(psection_limit);
 	if (params->restart) {
 		params->res_cur = iomem_resource.child;
 		params->restart = 0;
@@ -202,7 +196,6 @@ int cr_host_pmap_walk(struct crh_pmap_walk_params *params, uintptr_t *psection_b
 		if ((params->res_cur->flags & flags_mask) == flags_mask) {
 			*psection_base = params->res_cur->start >> 12;
 			*psection_limit = (params->res_cur->end + 1) >> 12;
-			CRH_ASSERT(*psection_limit > *psection_base, "");
 			err = 1;
 			if (psection_cur) {
 				*psection_cur = *psection_base;
@@ -230,14 +223,12 @@ uintptr_t cr_host_virt_to_phys(uintptr_t va)
 
 	pgd = pgd_offset(current->mm, va);
 	pud = pud_offset(pgd, va);
-	CRH_VALID_PTR(pud);
 	pe_val = pud_val(*pud);
 	if (pe_val & _PAGE_PSE) {
 		pfn = ((struct cra_page_ent_1G *)&pe_val)->pfn_base;
 		return (pfn << (9 + 9)) | (CRA_VA_TO_PD_IDX(va) * CRA_PS_2M) | (CRA_VA_TO_PT_IDX(va));
 	} else {
 		pmd = pmd_offset(pud, va);
-		CRH_VALID_PTR(pmd);
 		pe_val = pmd_val(*pmd);
 	}
 	if (pe_val & _PAGE_PSE) {
@@ -245,7 +236,6 @@ uintptr_t cr_host_virt_to_phys(uintptr_t va)
 		return (pfn << 9) | (CRA_VA_TO_PT_IDX(va));
 	} else {
 		pte = pte_offset_map(pmd, va);
-		CRH_VALID_PTR(pte);
 		pe_val = pte_val(*pte);
 	}
 	return ((struct cra_page_ent *)&pe_val)->pfn_base;
