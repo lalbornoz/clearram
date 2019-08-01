@@ -1,0 +1,6 @@
+1. release memory back to OS
+2. compaction logic
+3. add CR_{ASSERT,PRINTK_{DEBUG,ERR,INFO},SAFE_{ADD,SUB},VALID_{BASE,PTR,RANGE}}() everywhere
+4. test w/ and w/o -DDEBUG on lucio-{eeepc,thinkpad}., Linux QEMU VM, and FreeBSD QEMU VM w/ varying memory layouts, NUMA, CPU configurations, etc. pp.
+5. add SMP support: CPUs #{1,2,3} clear 256M-sized blocks #{1,2,3} within 1G-sized windows, CPU #0 clears the last block and triple faults
+6. clean up/refactor/... finish
