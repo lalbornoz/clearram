@@ -23,6 +23,11 @@ This can be mitigated by ensuring that sync(1) is invoked prior to writing to
 should suffice to prevent an obvious DoS attack vector and should thus normally not
 be changed.
 
+# Tested on
+FreeBSD v11.0-RELEASE on QEMU v2.5.0 (pc-i440fx-xenial, amd64, 4 GB RAM)
+Linux v4.7.8 on QEMU v2.5.0 (pc-i440fx-xenial, amd64, 4 GB RAM)
+Linux v4.8.0 on Lenovo ThinkPad X220 (amd64, 8 GB RAM)
+
 # Troubleshooting
 When built with -DDEBUG, the LKM will print the RAM sections encountered and the
 PFN<->VA range mappings created to the kernel ring buffer at loading time.
